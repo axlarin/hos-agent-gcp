@@ -216,3 +216,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Ignore generated architecture notes
+architechutre.md
+architecture.md
+
+# ── Project-specific ──────────────────────────────────────────────────────────
+# Data — LOCAL ONLY (sensitive Medicare HOS data — never commit)
+data/pdfs/*.pdf
+data/csvs/*.csv
+
+# Generated caches / runtime artifacts
+chroma_db/
+memory/schema_memory.json
+outputs/eval_results.json
+outputs/logs/*.log
+
+# Cloud credential key — delete immediately after use
+key.json
