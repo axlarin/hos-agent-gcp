@@ -230,6 +230,13 @@ chroma_db/
 memory/schema_memory.json
 outputs/eval_results.json
 outputs/logs/*.log
+outputs/token_usage.jsonl
 
 # Cloud credential key — delete immediately after use
 key.json
+
+# Work log — local only
+workdone.md
+
+# VSCode workspace settings — local only
+.vscode/

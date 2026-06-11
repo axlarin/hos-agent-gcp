@@ -30,12 +30,16 @@ logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger(__name__)
 
 # ── Lazy imports after logging is ready ───────────────────────────────────────
+import asyncio
+
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
+from google.genai import types, errors as genai_errors
 
 from agents.orchestrator import orchestrator
 from rag.vector_store import VectorStore
 from rag.schema_builder import SchemaBuilder
+import token_tracker
 
 # ── Global singletons ─────────────────────────────────────────────────────────
 session_service = InMemorySessionService()
@@ -89,24 +93,39 @@ class EvaluateRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _ensure_session(session_id: str | None) -> str:
+async def _ensure_session(session_id: str | None) -> str:
     sid = session_id or str(uuid.uuid4())
-    try:
-        session_service.get_session(app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=sid)
-    except Exception:
-        session_service.create_session(app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=sid)
+    existing = await session_service.get_session(app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=sid)
+    if existing is None:
+        await session_service.create_session(app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=sid)
     return sid
 
 
 async def _run_query(question: str, session_id: str) -> str:
     if runner is None:
         raise RuntimeError("Runner not initialised")
-    response = await runner.run_async(
-        user_id=DEFAULT_USER_ID,
-        session_id=session_id,
-        new_message=question,
-    )
-    return str(response)
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            final_response = ""
+            async for event in runner.run_async(
+                user_id=DEFAULT_USER_ID,
+                session_id=session_id,
+                new_message=types.Content(role="user", parts=[types.Part(text=question)]),
+            ):
+                token_tracker.record_event(event, session_id=session_id)
+                if event.is_final_response() and event.content and event.content.parts:
+                    final_response = event.content.parts[0].text or ""
+            return final_response
+        except (genai_errors.ServerError, genai_errors.ClientError) as exc:
+            retryable = getattr(exc, "status_code", None) in (429, 503)
+            if not retryable or attempt == max_retries - 1:
+                raise
+            wait = 2 ** (attempt + 1)
+            logger.warning("Gemini %s on attempt %d — retrying in %ds", exc.status_code, attempt + 1, wait)
+            await asyncio.sleep(wait)
+    return ""  # unreachable, satisfies type checker
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -125,7 +144,7 @@ async def health():
 
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
-    sid = _ensure_session(req.session_id)
+    sid = await _ensure_session(req.session_id)
     try:
         answer = await _run_query(req.question, sid)
     except Exception as exc:
@@ -136,7 +155,9 @@ async def query(req: QueryRequest):
 
 @app.post("/clear")
 async def clear():
-    session_service.clear_all_sessions()
+    sessions = await session_service.list_sessions(app_name=APP_NAME, user_id=DEFAULT_USER_ID)
+    for s in sessions.sessions:
+        await session_service.delete_session(app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=s.id)
     return {"status": "cleared"}
 
 
@@ -149,11 +170,16 @@ async def reload():
     return {"status": "reloaded"}
 
 
+@app.get("/usage")
+async def usage():
+    return token_tracker.get_summary()
+
+
 @app.post("/evaluate")
 async def evaluate(req: EvaluateRequest):
     from evaluation.evaluator import ComponentEvaluator
 
-    sid = _ensure_session(req.session_id)
+    sid = await _ensure_session(req.session_id)
     try:
         answer = await _run_query(req.question, sid)
     except Exception as exc:
@@ -173,7 +199,7 @@ async def evaluate_suite():
     evaluator = ComponentEvaluator(settings)
     results = []
     for case in TEST_CASES:
-        sid = _ensure_session(None)
+        sid = await _ensure_session(None)
         try:
             answer = await _run_query(case["question"], sid)
             scores = await evaluator.evaluate(question=case["question"], answer=answer)
@@ -204,7 +230,7 @@ if __name__ == "__main__":
         await schema_builder.build_or_load()
 
         runner = Runner(agent=orchestrator, app_name=APP_NAME, session_service=session_service)
-        sid = str(uuid.uuid4())
+        sid = await _ensure_session(None)
 
         print("HOS Agent ready. Commands: clear, history, quit")
         while True:
@@ -218,12 +244,15 @@ if __name__ == "__main__":
             if user_input.lower() == "quit":
                 break
             if user_input.lower() == "clear":
-                session_service.clear_all_sessions()
+                sessions = await session_service.list_sessions(app_name=APP_NAME, user_id=DEFAULT_USER_ID)
+                for s in sessions.sessions:
+                    await session_service.delete_session(app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=s.id)
                 sid = str(uuid.uuid4())
+                await _ensure_session(sid)
                 print("Session cleared.")
                 continue
             if user_input.lower() == "history":
-                session = session_service.get_session(
+                session = await session_service.get_session(
                     app_name=APP_NAME, user_id=DEFAULT_USER_ID, session_id=sid
                 )
                 for msg in getattr(session, "messages", []):
