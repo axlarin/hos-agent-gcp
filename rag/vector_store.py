@@ -158,8 +158,12 @@ class VectorStore:
 
     async def _sync_from_gcs(self, local_dir: str) -> None:
         # Download the persisted ChromaDB directory from GCS before opening it locally.
-        raise NotImplementedError("GCS sync not yet implemented")
+        import gcs_data
+
+        await gcs_data.download_directory(self._settings.gcs_bucket, "chroma_db/", Path(local_dir))
 
     async def _sync_to_gcs(self, local_dir: str) -> None:
         # Upload the updated ChromaDB directory back to GCS after re-indexing.
-        raise NotImplementedError("GCS sync not yet implemented")
+        import gcs_data
+
+        await gcs_data.upload_directory(self._settings.gcs_bucket, "chroma_db/", Path(local_dir))

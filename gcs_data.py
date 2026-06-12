@@ -50,3 +50,43 @@ def _download_prefix(bucket, prefix: str, local_dir: Path) -> None:
         dest = local_dir / Path(blob.name).name
         blob.download_to_filename(str(dest))
     logger.info("Downloaded %d file(s) from gs://%s/%s to %s", len(blobs), bucket.name, prefix, local_dir)
+
+
+async def download_directory(gcs_bucket: str, prefix: str, local_dir: Path) -> None:
+    """Download all objects under prefix into local_dir, preserving relative paths."""
+    from google.cloud import storage
+
+    client = storage.Client()
+    bucket = client.bucket(gcs_bucket)
+    await asyncio.to_thread(_download_tree, bucket, prefix, local_dir)
+
+
+async def upload_directory(gcs_bucket: str, prefix: str, local_dir: Path) -> None:
+    """Upload all files under local_dir to prefix, preserving relative paths."""
+    from google.cloud import storage
+
+    client = storage.Client()
+    bucket = client.bucket(gcs_bucket)
+    await asyncio.to_thread(_upload_tree, bucket, prefix, local_dir)
+
+
+def _download_tree(bucket, prefix: str, local_dir: Path) -> None:
+    local_dir.mkdir(parents=True, exist_ok=True)
+    blobs = [b for b in bucket.list_blobs(prefix=prefix) if not b.name.endswith("/")]
+    if not blobs:
+        logger.warning("No objects found under gs://%s/%s", bucket.name, prefix)
+        return
+    for blob in blobs:
+        rel_path = Path(blob.name).relative_to(prefix)
+        dest = local_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(dest))
+    logger.info("Downloaded %d file(s) from gs://%s/%s to %s", len(blobs), bucket.name, prefix, local_dir)
+
+
+def _upload_tree(bucket, prefix: str, local_dir: Path) -> None:
+    files = [p for p in local_dir.rglob("*") if p.is_file()]
+    for path in files:
+        rel_path = path.relative_to(local_dir).as_posix()
+        bucket.blob(f"{prefix}{rel_path}").upload_from_filename(str(path))
+    logger.info("Uploaded %d file(s) from %s to gs://%s/%s", len(files), local_dir, bucket.name, prefix)
