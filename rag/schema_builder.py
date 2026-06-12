@@ -232,6 +232,11 @@ class SchemaBuilder:
         Rebuilds automatically when PDF or CSV hashes change, even without force=True.
         """
         cache_path = Path(self._settings.schema_cache_path)
+
+        if self._settings.is_cloud:
+            import gcs_data
+            await gcs_data.download_directory(self._settings.gcs_bucket, "memory/", cache_path.parent)
+
         await self._load_csv_datasets()
 
         manifest = self._build_file_manifest()
@@ -278,6 +283,10 @@ class SchemaBuilder:
         cache_path.write_text(json.dumps(data, indent=2))
         SchemaBuilder._cache = schema
         SchemaBuilder._meta = meta
+
+        if self._settings.is_cloud:
+            import gcs_data
+            await gcs_data.upload_directory(self._settings.gcs_bucket, "memory/", cache_path.parent)
 
         import tools.pdf_tools as pt
         pt._inject(self._vector_store, self)
