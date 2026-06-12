@@ -17,6 +17,8 @@ COPY rag/ rag/
 COPY evaluation/ evaluation/
 COPY config/ config/
 COPY main.py .
+COPY token_tracker.py .
+COPY gcs_data.py .
 
 # Create runtime directories that are populated at startup
 RUN mkdir -p outputs/logs memory chroma_db

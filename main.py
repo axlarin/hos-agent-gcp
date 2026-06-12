@@ -40,6 +40,7 @@ from agents.orchestrator import orchestrator
 from rag.vector_store import VectorStore
 from rag.schema_builder import SchemaBuilder
 import token_tracker
+import gcs_data
 
 # ── Global singletons ─────────────────────────────────────────────────────────
 session_service = InMemorySessionService()
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI):
     global runner, vector_store, schema_builder
 
     logger.info("Starting HOS Agent (environment=%s)", settings.environment)
+
+    await gcs_data.sync_input_data(settings)
 
     vector_store = VectorStore(settings)
     await vector_store.build_or_load()
@@ -165,6 +168,7 @@ async def clear():
 async def reload():
     if vector_store is None or schema_builder is None:
         raise HTTPException(status_code=503, detail="Not initialised")
+    await gcs_data.sync_input_data(settings)
     await vector_store.build_or_load(force=True)
     await schema_builder.build_or_load(force=True)
     return {"status": "reloaded"}
@@ -222,6 +226,8 @@ if __name__ == "__main__":
 
     async def _cli():
         global runner, vector_store, schema_builder
+
+        await gcs_data.sync_input_data(settings)
 
         vector_store = VectorStore(settings)
         await vector_store.build_or_load()

@@ -54,10 +54,9 @@ class VectorStore:
         # get_or_create so the collection survives restarts without error.
         self._collection = client.get_or_create_collection("hos_docs")
 
+        # In cloud mode, gcs_data.sync_input_data() has already repointed pdf_dir
+        # at a local download of the bucket's data/pdfs/ prefix.
         pdf_dir = Path(self._settings.pdf_dir)
-        # Cloud containers don't ship PDFs in the image; download them from GCS instead.
-        if self._settings.is_cloud:
-            pdf_dir = await self._download_pdfs_from_gcs()
 
         # Nothing to index — mark ready so the app still starts (searches will return empty).
         if not pdf_dir.exists() or not any(pdf_dir.glob("*.pdf")):
@@ -164,7 +163,3 @@ class VectorStore:
     async def _sync_to_gcs(self, local_dir: str) -> None:
         # Upload the updated ChromaDB directory back to GCS after re-indexing.
         raise NotImplementedError("GCS sync not yet implemented")
-
-    async def _download_pdfs_from_gcs(self) -> Path:
-        # Download PDFs from the GCS bucket and return the local temp path.
-        raise NotImplementedError("GCS PDF download not yet implemented")
