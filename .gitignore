@@ -234,6 +234,7 @@ outputs/token_usage.jsonl
 
 # Cloud credential key — delete immediately after use
 key.json
+sa-key.json
 
 # Work log — local only
 workdone.md
