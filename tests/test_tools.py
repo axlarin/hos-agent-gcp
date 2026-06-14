@@ -11,9 +11,9 @@ from tools.analysis_tools import _find_column, run_categorical_analysis, run_gro
 def _inject_fake_dataset():
     """Inject a minimal fake DataFrame so tests don't need real HOS files."""
     df = pd.DataFrame({
-        "AGE": [65, 70, 75, 65, 80, 72, 68, 77],
-        "SEX": [1, 2, 1, 2, 1, 2, 1, 2],
-        "GENHEALT": [1, 2, 3, 2, 1, 3, 2, 4],
+        "AGE": [65, 70, 75, 65, 80, 72, 68, 77, 74, 69],
+        "SEX": [1, 2, 1, 2, 1, 2, 1, 2, 1, 2],
+        "GENHEALT": [1, 2, 3, 2, 1, 3, 2, 4, 2, 3],
     })
     csv_tools._datasets["fake_ds"] = df
     yield
