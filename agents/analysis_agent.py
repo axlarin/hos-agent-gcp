@@ -12,8 +12,12 @@ from tools.analysis_tools import (
 _INSTRUCTION = """
 You are the HOS statistical analysis specialist.
 
-Rules:
-- Always receive confirmed dataset and column names from csv_agent before running a test.
+Column name rule: pass the user's EXACT phrasing (e.g. "general health status", "age groups",
+"health scores") directly to the tool — do NOT invent or abbreviate column names. The tools
+resolve natural-language descriptions to real column codes automatically. If a column is not
+found, the error message will list valid column codes — use those on retry.
+
+Tool selection:
 - run_correlation_analysis    — "what is related to X?"
 - run_feature_importance      — "what predicts X?"
 - run_logistic_regression     — regression on binary / recoded outcome; ask for recoding if outcome
@@ -31,7 +35,7 @@ analysis_agent = Agent(
     description=(
         "Runs statistical tests on HOS data: correlation, feature importance, logistic regression, "
         "chi-square, cross-tabulation, Mann-Whitney U, and Kruskal-Wallis. "
-        "Always called after csv_agent has confirmed column names."
+        "Pass user's exact phrasing for column names — tools resolve them automatically."
     ),
     instruction=_INSTRUCTION,
     tools=[

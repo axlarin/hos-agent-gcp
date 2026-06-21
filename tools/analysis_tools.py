@@ -216,7 +216,7 @@ def run_group_comparison(dataset: str, value_column: str, group_column: str) -> 
     groups = {}
     for val, group_df in df.groupby(grp_col):
         label = value_map.get(str(int(val)), str(val)) if value_map else str(val)
-        data = group_df[val_col].dropna().values
+        data = pd.to_numeric(group_df[val_col], errors="coerce").dropna().to_numpy(dtype=float)
         if len(data) >= 5:
             groups[label] = data
 
@@ -291,6 +291,17 @@ def _find_column(df: pd.DataFrame, name: str) -> str:
     except Exception as exc:
         logger.debug("_find_column fallback error: %s", exc)
 
+    # Build a hint list: column_code (short description) for up to 20 schema-known columns
+    try:
+        schema = _load_schema()
+        hints = [
+            f"{col} ({schema.get(col.upper(), {}).get('description', '')[:60]})"
+            for col in df.columns
+            if schema.get(col.upper(), {}).get("description")
+        ][:20]
+    except Exception:
+        hints = list(df.columns[:20])
     raise KeyError(
-        f"Column '{name}' not found in dataset. Available: {list(df.columns[:20])}..."
+        f"Column '{name}' not found. Pass the user's exact phrasing or use one of these "
+        f"column codes: {hints}"
     )
