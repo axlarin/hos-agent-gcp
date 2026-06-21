@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -239,8 +242,55 @@ def run_group_comparison(dataset: str, value_column: str, group_column: str) -> 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 def _find_column(df: pd.DataFrame, name: str) -> str:
-    """Return the exact column name from df matching name case-insensitively."""
+    """Resolve a column name with three-tier fallback:
+    1. Exact case-insensitive match on column codes.
+    2. Substring match of name within schema descriptions.
+    3. Embedding cosine similarity against schema descriptions.
+    """
+    name_lower = name.lower()
+
+    # Tier 1 — exact case-insensitive
     for col in df.columns:
-        if col.lower() == name.lower():
+        if col.lower() == name_lower:
             return col
-    raise KeyError(f"Column '{name}' not found in dataset. Available: {list(df.columns[:20])}...")
+
+    # Tiers 2+3 — schema-based resolution
+    try:
+        schema = _load_schema()
+        df_upper = {col.upper(): col for col in df.columns}
+
+        # Only consider columns that are actually in this dataset and have descriptions
+        candidates = [
+            (df_upper[code], entry["description"])
+            for code, entry in schema.items()
+            if df_upper.get(code) and entry.get("description")
+        ]
+
+        if candidates:
+            # Tier 2 — name appears as a substring inside the description
+            for actual, desc in candidates:
+                if name_lower in desc.lower():
+                    logger.info("_find_column: '%s' → '%s' (description substring)", name, actual)
+                    return actual
+
+            # Tier 3 — embedding cosine similarity (handles synonyms / paraphrases)
+            from rag.embedder import embed
+            vecs = embed([name] + [desc for _, desc in candidates])
+            query_vec = vecs[0]
+            best_sim, best_col = 0.0, None
+            for i, (actual, _) in enumerate(candidates):
+                # MiniLM vectors are L2-normalised so dot product == cosine similarity
+                sim = sum(a * b for a, b in zip(query_vec, vecs[i + 1]))
+                if sim > best_sim:
+                    best_sim, best_col = sim, actual
+            if best_sim >= 0.35 and best_col:
+                logger.info(
+                    "_find_column: '%s' → '%s' (embedding sim=%.3f)", name, best_col, best_sim
+                )
+                return best_col
+    except Exception as exc:
+        logger.debug("_find_column fallback error: %s", exc)
+
+    raise KeyError(
+        f"Column '{name}' not found in dataset. Available: {list(df.columns[:20])}..."
+    )

@@ -92,6 +92,7 @@ class QueryResponse(BaseModel):
 class EvaluateRequest(BaseModel):
     question: str
     session_id: str | None = None
+    deep: bool = False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -191,12 +192,12 @@ async def evaluate(req: EvaluateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
     evaluator = ComponentEvaluator(settings)
-    scores = await evaluator.evaluate(question=req.question, answer=answer)
+    scores = await evaluator.evaluate(question=req.question, answer=answer, deep=req.deep)
     return {"answer": answer, "session_id": sid, "evaluation": scores}
 
 
 @app.post("/evaluate/suite")
-async def evaluate_suite():
+async def evaluate_suite(deep: bool = False):
     from evaluation.evaluator import ComponentEvaluator
     from evaluation.test_suite import TEST_CASES
 
@@ -206,11 +207,12 @@ async def evaluate_suite():
         sid = await _ensure_session(None)
         try:
             answer = await _run_query(case["question"], sid)
-            scores = await evaluator.evaluate(question=case["question"], answer=answer)
+            scores = await evaluator.evaluate(question=case["question"], answer=answer, deep=deep)
         except Exception as exc:
             scores = {"error": str(exc)}
             answer = ""
         results.append({"question": case["question"], "answer": answer, "evaluation": scores})
+        await asyncio.sleep(3)
 
     import json
 

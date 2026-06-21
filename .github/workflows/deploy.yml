@@ -10,6 +10,7 @@ env:
   REPOSITORY: hos-agent
   SERVICE: hos-agent
   IMAGE: us-east1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/hos-agent/app
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
