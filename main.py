@@ -105,7 +105,18 @@ async def _ensure_session(session_id: str | None) -> str:
     return sid
 
 
-async def _run_query(question: str, session_id: str) -> str:
+# Tool names whose return value counts as "retrieved context" for evaluation —
+# grounding lookups (PDF/schema/dataset info), not computed analysis results.
+_CONTEXT_TOOLS = {"search_pdf_guidance", "get_column_info", "list_datasets"}
+
+
+async def _run_query(question: str, session_id: str) -> tuple[str, str]:
+    """Run one turn through the orchestrator.
+
+    Returns (answer, context) — context is the concatenated output of any
+    retrieval-style tool call (PDF search, schema/dataset lookup) made during
+    the run, used to score retrieval_relevance / answer_faithfulness.
+    """
     if runner is None:
         raise RuntimeError("Runner not initialised")
 
@@ -113,15 +124,22 @@ async def _run_query(question: str, session_id: str) -> str:
     for attempt in range(max_retries):
         try:
             final_response = ""
+            context_parts: list[str] = []
             async for event in runner.run_async(
                 user_id=DEFAULT_USER_ID,
                 session_id=session_id,
                 new_message=types.Content(role="user", parts=[types.Part(text=question)]),
             ):
                 token_tracker.record_event(event, session_id=session_id)
+                for fr in event.get_function_responses():
+                    if fr.name in _CONTEXT_TOOLS:
+                        payload = fr.response
+                        value = payload.get("result", payload) if isinstance(payload, dict) else payload
+                        if isinstance(value, str):
+                            context_parts.append(value)
                 if event.is_final_response() and event.content and event.content.parts:
                     final_response = event.content.parts[0].text or ""
-            return final_response
+            return final_response, "\n\n".join(context_parts)
         except (genai_errors.ServerError, genai_errors.ClientError) as exc:
             retryable = getattr(exc, "status_code", None) in (429, 503)
             if not retryable or attempt == max_retries - 1:
@@ -129,7 +147,7 @@ async def _run_query(question: str, session_id: str) -> str:
             wait = 2 ** (attempt + 1)
             logger.warning("Gemini %s on attempt %d — retrying in %ds", exc.status_code, attempt + 1, wait)
             await asyncio.sleep(wait)
-    return ""  # unreachable, satisfies type checker
+    return "", ""  # unreachable, satisfies type checker
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -150,7 +168,7 @@ async def health():
 async def query(req: QueryRequest):
     sid = await _ensure_session(req.session_id)
     try:
-        answer = await _run_query(req.question, sid)
+        answer, _context = await _run_query(req.question, sid)
     except Exception as exc:
         logger.exception("Query failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -186,13 +204,13 @@ async def evaluate(req: EvaluateRequest):
 
     sid = await _ensure_session(req.session_id)
     try:
-        answer = await _run_query(req.question, sid)
+        answer, context = await _run_query(req.question, sid)
     except Exception as exc:
         logger.exception("Evaluate query failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
     evaluator = ComponentEvaluator(settings)
-    scores = await evaluator.evaluate(question=req.question, answer=answer, deep=req.deep)
+    scores = await evaluator.evaluate(question=req.question, answer=answer, context=context, deep=req.deep)
     return {"answer": answer, "session_id": sid, "evaluation": scores}
 
 
@@ -206,8 +224,10 @@ async def evaluate_suite(deep: bool = False):
     for case in TEST_CASES:
         sid = await _ensure_session(None)
         try:
-            answer = await _run_query(case["question"], sid)
-            scores = await evaluator.evaluate(question=case["question"], answer=answer, deep=deep)
+            answer, context = await _run_query(case["question"], sid)
+            scores = await evaluator.evaluate(
+                question=case["question"], answer=answer, context=context, deep=deep
+            )
         except Exception as exc:
             scores = {"error": str(exc)}
             answer = ""
@@ -267,7 +287,7 @@ if __name__ == "__main__":
                     print(f"  [{msg.role}] {msg.content}")
                 continue
 
-            answer = await _run_query(user_input, sid)
+            answer, _context = await _run_query(user_input, sid)
             print(f"\nAgent: {answer}")
 
     asyncio.run(_cli())
