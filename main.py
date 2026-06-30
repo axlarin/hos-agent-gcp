@@ -4,6 +4,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal, Union
 
 from dotenv import load_dotenv
 
@@ -92,7 +93,7 @@ class QueryResponse(BaseModel):
 class EvaluateRequest(BaseModel):
     question: str
     session_id: str | None = None
-    deep: bool = False
+    deep: Union[bool, Literal["auto"]] = False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -215,12 +216,29 @@ async def evaluate(req: EvaluateRequest):
 
 
 @app.post("/evaluate/suite")
-async def evaluate_suite(deep: bool = False):
+async def evaluate_suite(deep: Union[bool, Literal["auto"]] = False):
+    """Run all ground-truth test cases and score them.
+
+    Cases flagged requires_prior_turn need conversational context the suite's
+    fresh-session-per-case design cannot provide (e.g. "the same analysis" with
+    no prior turn to refer to) — they are reported separately under
+    context_dependent_results instead of being folded into the main pass count,
+    since failing them reflects a test-harness limitation, not agent quality.
+
+    deep="auto" reports aggregate Gemini-escalation stats (call count, which
+    cases escalated and why) under instrumentation_summary, alongside each
+    case's own evaluation.instrumentation block.
+    """
     from evaluation.evaluator import ComponentEvaluator
     from evaluation.test_suite import TEST_CASES
 
     evaluator = ComponentEvaluator(settings)
-    results = []
+    scored_results = []
+    context_dependent_results = []
+    total_embedding_evals = 0
+    total_gemini_calls = 0
+    escalation_log: list[dict] = []
+
     for case in TEST_CASES:
         sid = await _ensure_session(None)
         try:
@@ -228,17 +246,40 @@ async def evaluate_suite(deep: bool = False):
             scores = await evaluator.evaluate(
                 question=case["question"], answer=answer, context=context, deep=deep
             )
+            instr = scores.get("instrumentation")
+            if instr:
+                total_embedding_evals += instr["embedding_evaluations"]
+                total_gemini_calls += instr["gemini_call_count"]
+                if instr["escalation_reasons"]:
+                    escalation_log.append({
+                        "question": case["question"],
+                        "reasons": instr["escalation_reasons"],
+                    })
         except Exception as exc:
             scores = {"error": str(exc)}
             answer = ""
-        results.append({"question": case["question"], "answer": answer, "evaluation": scores})
+        entry = {"question": case["question"], "answer": answer, "evaluation": scores}
+        if case.get("requires_prior_turn"):
+            context_dependent_results.append(entry)
+        else:
+            scored_results.append(entry)
         await asyncio.sleep(3)
 
     import json
 
+    output = {
+        "results": scored_results,
+        "context_dependent_results": context_dependent_results,
+        "instrumentation_summary": {
+            "deep_mode": deep,
+            "total_embedding_evaluations": total_embedding_evals,
+            "total_gemini_calls": total_gemini_calls,
+            "escalations": escalation_log,
+        },
+    }
     Path(settings.eval_results_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(settings.eval_results_path).write_text(json.dumps(results, indent=2))
-    return {"results": results}
+    Path(settings.eval_results_path).write_text(json.dumps(output, indent=2))
+    return output
 
 
 # ── CLI mode ──────────────────────────────────────────────────────────────────

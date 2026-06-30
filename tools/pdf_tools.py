@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # VectorStore and SchemaBuilder are injected at startup via module-level singletons
@@ -7,11 +8,27 @@ from typing import Optional
 _vector_store = None
 _schema_builder = None
 
+# Short acronym queries (e.g. "What does PCS mean?") embed poorly against the
+# verbose PDF passages that define them. Expanding known acronyms before
+# embedding the search query steers retrieval toward the right chunk.
+_ACRONYM_EXPANSIONS = {
+    "pcs": "Physical Component Summary (PCS)",
+    "mcs": "Mental Component Summary (MCS)",
+}
+
 
 def _inject(vector_store, schema_builder) -> None:
     global _vector_store, _schema_builder
     _vector_store = vector_store
     _schema_builder = schema_builder
+
+
+def _expand_acronyms(query: str) -> str:
+    expanded = query
+    for acronym, expansion in _ACRONYM_EXPANSIONS.items():
+        if re.search(rf"\b{acronym}\b", query, re.IGNORECASE):
+            expanded = f"{expanded} {expansion}"
+    return expanded
 
 
 def search_pdf_guidance(query: str) -> str:
@@ -25,7 +42,7 @@ def search_pdf_guidance(query: str) -> str:
     """
     if _vector_store is None:
         raise RuntimeError("VectorStore not injected — call tools.pdf_tools._inject() at startup")
-    results = _vector_store.search(query, n_results=5)
+    results = _vector_store.search(_expand_acronyms(query), n_results=5)
     if not results:
         return "No relevant documentation found."
     parts = []

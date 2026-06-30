@@ -93,5 +93,6 @@ TEST_CASES = [
         "expected_tool": "run_correlation_analysis",
         "ground_truth_keywords": ["c25b"],
         "note": "Requires conversation context from a prior turn — run after a c25a query",
+        "requires_prior_turn": True,
     },
 ]
