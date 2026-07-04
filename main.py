@@ -96,6 +96,14 @@ class EvaluateRequest(BaseModel):
     deep: Union[bool, Literal["auto"]] = False
 
 
+class ReportRequest(BaseModel):
+    dataset: str
+    target_column: str
+    workflow: str = "health_profile"
+    max_missing_pct: float = 0.5
+    max_unique_for_classification: int = 20
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _ensure_session(session_id: str | None) -> str:
@@ -192,6 +200,36 @@ async def reload():
     await vector_store.build_or_load(force=True)
     await schema_builder.build_or_load(force=True)
     return {"status": "reloaded"}
+
+
+@app.post("/report")
+async def report(req: ReportRequest):
+    """Run a multi-step analytical workflow directly (no LLM hop) and return
+    both the markdown report and the structured execution trace.
+
+    Equivalent to asking analysis_agent for a comprehensive report, but
+    synchronous and machine-readable — useful for programmatic use and testing.
+    Gate thresholds are configurable via the request body.
+    """
+    from tools.report_tools import GateConfig, _run_workflow
+
+    config = GateConfig(
+        max_missing_pct=req.max_missing_pct,
+        max_unique_for_classification=req.max_unique_for_classification,
+    )
+    try:
+        result = _run_workflow(req.dataset, req.target_column, req.workflow, config)
+    except Exception as exc:
+        logger.exception("Report workflow failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    from pathlib import Path as _Path
+    import json as _json
+    trace_path = _Path(settings.report_trace_path)
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(_json.dumps(result.to_dict(), indent=2))
+
+    return result.to_dict()
 
 
 @app.get("/usage")

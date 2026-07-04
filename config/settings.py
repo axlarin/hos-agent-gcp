@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     chroma_dir: str = Field("./chroma_db", alias="CHROMA_DIR")
     schema_cache_path: str = Field("./memory/schema_memory.json", alias="SCHEMA_CACHE_PATH")
     eval_results_path: str = Field("./outputs/eval_results.json", alias="EVAL_RESULTS_PATH")
+    report_trace_path: str = Field("./outputs/report_trace.json", alias="REPORT_TRACE_PATH")
 
     # Cloud (GCS) settings — only used when environment=cloud
     gcs_bucket: str = Field("", alias="GCS_BUCKET")

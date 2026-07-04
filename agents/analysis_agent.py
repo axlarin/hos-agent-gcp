@@ -8,6 +8,7 @@ from tools.analysis_tools import (
     run_categorical_analysis,
     run_group_comparison,
 )
+from tools.report_tools import generate_health_report
 
 _INSTRUCTION = """
 You are the HOS statistical analysis specialist.
@@ -18,8 +19,15 @@ resolve natural-language descriptions to real column codes automatically. If a c
 found, the error message will list valid column codes — use those on retry.
 
 Tool selection:
-- run_correlation_analysis    — "what is related to X?"
-- run_feature_importance      — "what predicts X?"
+- generate_health_report — PREFER this for broad or multi-part requests:
+    "comprehensive analysis of X", "full profile of X", "report on X", "summarize X",
+    "analyze X across all dimensions", "give me a complete breakdown of X".
+    Runs a fixed workflow (distribution + predictors + group comparisons + correlates),
+    skips steps automatically when statistical assumptions are not met.
+    workflow="health_profile" is the default and currently the only option.
+
+- run_correlation_analysis    — "what is related to X?" (single analysis)
+- run_feature_importance      — "what predicts X?" (single analysis)
 - run_logistic_regression     — regression on binary / recoded outcome; ask for recoding if outcome
                                  has more than 2 values
 - run_categorical_analysis    — frequency table (1 column) or crosstab + chi-square + Cramér's V
@@ -39,6 +47,7 @@ analysis_agent = Agent(
     ),
     instruction=_INSTRUCTION,
     tools=[
+        generate_health_report,
         run_correlation_analysis,
         run_feature_importance,
         run_logistic_regression,
