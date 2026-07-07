@@ -151,13 +151,24 @@ with tab_chat:
             except requests.exceptions.Timeout:
                 msg = (
                     f"⏱ **Request timed out** after {timeout} s. "
-                    "Increase the timeout in the sidebar and try again, or hit "
-                    "'Check server health' to wake the instance first."
+                    "Hit **'Check server health'** in the sidebar to wake the instance, "
+                    "wait for the green tick, then try again."
                 )
                 placeholder.error(msg)
                 st.session_state.messages.append({"role": "assistant", "content": msg})
             except requests.exceptions.ConnectionError:
                 msg = f"❌ **Cannot connect** to `{base_url}`. Check the API URL in the sidebar."
+                placeholder.error(msg)
+                st.session_state.messages.append({"role": "assistant", "content": msg})
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 503:
+                    msg = (
+                        "🔄 **Server cold-starting (503).** "
+                        "Hit **'Check server health'** in the sidebar, wait for the green tick, "
+                        "then resend your question."
+                    )
+                else:
+                    msg = f"❌ **HTTP error:** {exc}"
                 placeholder.error(msg)
                 st.session_state.messages.append({"role": "assistant", "content": msg})
             except Exception as exc:
@@ -270,6 +281,11 @@ with tab_report:
                     st.error(f"⏱ Timed out after {timeout} s. Try again or increase the timeout.")
                 except requests.exceptions.ConnectionError:
                     st.error(f"❌ Cannot connect to `{base_url}`.")
+                except requests.exceptions.HTTPError as exc:
+                    if exc.response is not None and exc.response.status_code == 503:
+                        st.error("🔄 Server cold-starting (503). Click 'Check server health' in the sidebar, wait for the green tick, then try again.")
+                    else:
+                        st.error(f"❌ HTTP error: {exc}")
                 except Exception as exc:
                     try:
                         detail = r.json().get("detail", str(exc))
