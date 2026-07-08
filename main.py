@@ -178,6 +178,15 @@ async def query(req: QueryRequest):
     sid = await _ensure_session(req.session_id)
     try:
         answer, _context = await _run_query(req.question, sid)
+    except KeyError as exc:
+        # Tool-level column-not-found errors — return as a readable answer
+        # rather than a 500 so the user sees the message in the chat UI.
+        logger.warning("Tool KeyError in query: %s", exc)
+        answer = (
+            f"I couldn't complete that analysis: {exc}\n\n"
+            "Try rephrasing the column name, or ask 'What columns does this dataset have?' "
+            "to see available variables."
+        )
     except Exception as exc:
         logger.exception("Query failed")
         raise HTTPException(status_code=500, detail=str(exc))

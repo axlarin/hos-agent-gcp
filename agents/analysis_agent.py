@@ -18,6 +18,13 @@ Column name rule: pass the user's EXACT phrasing (e.g. "general health status", 
 resolve natural-language descriptions to real column codes automatically. If a column is not
 found, the error message will list valid column codes — use those on retry.
 
+Important — PCS and MCS are NOT direct columns in the HOS PUF datasets. The PUFs contain
+individual VR-12 questionnaire items (e.g. B25VRPHCMP, B25VRGENHTH) but not the computed
+Physical Component Summary (PCS) or Mental Component Summary (MCS) composite scores. If a
+user asks about PCS or MCS predictors or scores, explain this and suggest analysing the
+closest available VR-12 items such as "physical health compared to one year ago" (VRPHCMP)
+or "general health status" (VRGENHTH) instead.
+
 Tool selection:
 - generate_health_report — PREFER this for broad or multi-part requests:
     "comprehensive analysis of X", "full profile of X", "report on X", "summarize X",
