@@ -88,7 +88,9 @@ def run_feature_importance(dataset: str, target_column: str, top_n: int = 10) ->
     X = sub[feature_cols]
     y = sub[target]
 
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    # n_estimators=50 and max_samples=0.3 keep results statistically solid
+    # while cutting fit time ~3-4x on large HOS datasets (263k+ rows).
+    clf = RandomForestClassifier(n_estimators=50, max_samples=0.3, random_state=42, n_jobs=-1)
     clf.fit(X, y)
 
     importances = sorted(zip(feature_cols, clf.feature_importances_), key=lambda x: x[1], reverse=True)[:top_n]
