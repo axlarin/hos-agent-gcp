@@ -68,8 +68,8 @@ jobs:
             --image ${{ env.IMAGE }}:${{ github.sha }} \
             --platform managed \
             --region ${{ env.REGION }} \
-            --memory 2Gi \
-            --cpu 2 \
+            --memory 8Gi \
+            --cpu 4 \
             --min-instances 0 \
             --max-instances 5 \
             --timeout 900 \
