@@ -25,7 +25,7 @@ DeepMode = Union[bool, Literal["auto"]]
 _AUTO_RR_THRESHOLD = 0.5
 _AUTO_AF_THRESHOLD = 0.6
 _AUTO_AQ_THRESHOLD = 0.5
-_AUTO_AQ_GATE = 0.6
+_AUTO_AQ_GATE = 0.55
 
 # Gemini-judge prompts truncate context to this many characters. Context can be
 # the concatenation of multiple retrieval-tool outputs (e.g. search_pdf_guidance
@@ -154,8 +154,14 @@ class ComponentEvaluator:
             if any(kw in q for kw in keywords):
                 return {"component": "tool_selection", "score": 1.0, "passed": True,
                         "reason": f"Question matches {tool}"}
-        return {"component": "tool_selection", "score": 0.5, "passed": False,
-                "reason": "No analysis tool keyword matched — may be a non-analysis query"}
+        # Only penalise when the question is clearly an analysis query that should
+        # have matched a tool. Non-analysis questions (PDF lookups, dataset listing)
+        # don't need an analysis tool, so scoring them 0.5 is misleading.
+        if any(kw in q for kw in _ROUTING_KEYWORDS["analysis_agent"]):
+            return {"component": "tool_selection", "score": 0.0, "passed": False,
+                    "reason": "Analysis question but no tool keyword matched"}
+        return {"component": "tool_selection", "score": 1.0, "passed": True,
+                "reason": "Non-analysis query — tool selection not required"}
 
     # ── Similarity-scored dimensions — embedding / Gemini / auto-escalated ────
 
