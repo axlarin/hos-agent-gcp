@@ -4,15 +4,45 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# Name of the manifest file stored alongsid e the ChromaDB directory.
+# Bump this string whenever the enrichment logic or chunk format changes so the
+# manifest mismatch triggers an automatic re-index without needing force=True.
+_INDEX_VERSION = "2"
+
+# Name of the manifest file stored alongside the ChromaDB directory.
 # The manifest maps each PDF filename to its MD5 hash so we can detect
 # when any PDF has been added, removed, or replaced without re-reading them all.
 _MANIFEST_FILE = "chroma_manifest.json"
+
+# Human-readable titles for the known HOS PDF filenames.
+_PDF_TITLES: Dict[str, str] = {
+    "hos_dug_puf_c25a": "HOS Data User Guide PUF C25a",
+    "hos_dug_puf_c26b": "HOS Data User Guide PUF C26b",
+    "hos_dug_puf_c27b": "HOS Data User Guide PUF C27b",
+}
+
+# "Physical Component Summary (PCS)" → captures long name + abbreviation.
+_RE_LONG_SHORT = re.compile(
+    r'\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,5})\s+\(([A-Z][A-Z0-9\-]{1,9})\)'
+)
+# "PCS (Physical Component Summary)" → captures abbreviation + long name.
+_RE_SHORT_LONG = re.compile(
+    r'\b([A-Z][A-Z0-9\-]{1,9})\s+\(([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,5})\)'
+)
+# All-caps tokens that look like variable codes: B25GENHLTH, VRPHCMP, PCS, MCS …
+_RE_VAR_CODE = re.compile(r'\b[A-Z][A-Z0-9]{2,}\b')
+# Common English uppercase words to exclude from keyword extraction.
+_STOP_CAPS = frozenset({
+    "ALL", "AND", "ANY", "ARE", "ALSO", "BEEN", "BOTH", "BUT", "CAN",
+    "EACH", "FOR", "FROM", "HAVE", "INTO", "ITS", "MAY", "MORE", "NEW",
+    "NOT", "SOME", "SUCH", "THAN", "THAT", "THE", "THEN", "THEY",
+    "THIS", "TWO", "USE", "WERE", "WHEN", "WITH", "WILL", "YOUR",
+})
 
 
 class VectorStore:
@@ -82,12 +112,13 @@ class VectorStore:
         for pdf_path in sorted(pdf_dir.glob("*.pdf")):
             text = self._extract_text(pdf_path)
             chunks = chunk_text(text)
-            vectors = embed(chunks)
+            enriched = [self._enrich_chunk(c, pdf_path) for c in chunks]
+            vectors = embed(enriched)
             # IDs are deterministic: stem + chunk index, so re-indexing the same
             # PDF with the same content is idempotent (ChromaDB upserts by ID).
             ids = [f"{pdf_path.stem}_{i}" for i in range(len(chunks))]
             metadatas = [{"source": pdf_path.name, "chunk": i} for i in range(len(chunks))]
-            self._collection.add(documents=chunks, embeddings=vectors, ids=ids, metadatas=metadatas)
+            self._collection.add(documents=enriched, embeddings=vectors, ids=ids, metadatas=metadatas)
             logger.info("  Indexed %s (%d chunks)", pdf_path.name, len(chunks))
 
         # Save the new manifest so the next startup skips re-indexing.
@@ -136,9 +167,37 @@ class VectorStore:
         except ImportError:
             raise ImportError("pypdf is required for PDF extraction: pip install pypdf")
 
+    def _enrich_chunk(self, chunk: str, pdf_path: Path) -> str:
+        """Prepend document title and extracted keywords to a chunk before embedding.
+
+        Storing enriched text as the ChromaDB document means the header keywords
+        participate in both the embedding and the retrieved context — short queries
+        like 'What does PCS mean?' embed closer to a chunk that explicitly lists
+        'PCS, Physical Component Summary' as keywords than to the raw passage alone.
+        """
+        title = _PDF_TITLES.get(pdf_path.stem.lower(), pdf_path.stem)
+
+        keywords: set[str] = set()
+        for m in _RE_LONG_SHORT.finditer(chunk):
+            keywords.add(m.group(1).strip())
+            keywords.add(m.group(2).strip())
+        for m in _RE_SHORT_LONG.finditer(chunk):
+            keywords.add(m.group(1).strip())
+            keywords.add(m.group(2).strip())
+        for code in _RE_VAR_CODE.findall(chunk):
+            if code not in _STOP_CAPS:
+                keywords.add(code)
+
+        lines = [f"Document: {title}"]
+        if keywords:
+            lines.append(f"Keywords: {', '.join(sorted(keywords))}")
+        lines.append("-" * 32)
+        return "\n".join(lines) + "\n\n" + chunk
+
     def _build_manifest(self, pdf_dir: Path) -> Dict[str, str]:
         # MD5 is fast and collision-resistant enough for change detection (not security).
-        manifest = {}
+        # _INDEX_VERSION is included so any enrichment logic change auto-triggers rebuild.
+        manifest: Dict[str, str] = {"_index_version": _INDEX_VERSION}
         for p in sorted(pdf_dir.glob("*.pdf")):
             h = hashlib.md5(p.read_bytes()).hexdigest()
             manifest[p.name] = h
@@ -147,7 +206,12 @@ class VectorStore:
     def _load_manifest(self, chroma_dir: str) -> Dict[str, str]:
         path = Path(chroma_dir) / _MANIFEST_FILE
         if path.exists():
-            return json.loads(path.read_text())
+            stored = json.loads(path.read_text())
+            # Version mismatch means enrichment logic changed — treat as empty
+            # so the comparison in build_or_load() forces a full re-index.
+            if stored.get("_index_version") != _INDEX_VERSION:
+                return {}
+            return stored
         # No manifest on first run — treat as empty so indexing always proceeds.
         return {}
 

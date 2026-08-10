@@ -72,7 +72,7 @@ jobs:
             --cpu 4 \
             --min-instances 0 \
             --max-instances 5 \
-            --timeout 900 \
+            --timeout 3600 \
             --port 8080 \
             --set-secrets GOOGLE_API_KEY=GOOGLE_API_KEY:latest \
             --set-env-vars ENVIRONMENT=cloud \

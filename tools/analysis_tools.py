@@ -93,12 +93,28 @@ def run_feature_importance(dataset: str, target_column: str, top_n: int = 10) ->
     clf = RandomForestClassifier(n_estimators=50, max_samples=0.3, random_state=42, n_jobs=-1)
     clf.fit(X, y)
 
-    importances = sorted(zip(feature_cols, clf.feature_importances_), key=lambda x: x[1], reverse=True)[:top_n]
+    importance_map = dict(zip(feature_cols, clf.feature_importances_))
+    importances = sorted(importance_map.items(), key=lambda x: x[1], reverse=True)[:top_n]
 
     lines = [f"Top {top_n} predictors of {target_column} in {dataset} (Random Forest):\n"]
     for col, imp in importances:
         label = schema.get(col.upper(), {}).get("description", col)
         lines.append(f"  {col} ({label}): importance={round(imp, 4)}")
+
+    # Always report demographic variables separately so they are not silently
+    # excluded when clinical items dominate the top_n ranking.
+    _DEMOGRAPHIC_KEYWORDS = ["age", "sex", "race", "education", "marital", "educ"]
+    demo_cols = [
+        c for c in feature_cols
+        if any(kw in c.lower() for kw in _DEMOGRAPHIC_KEYWORDS)
+    ]
+    if demo_cols:
+        lines.append("\nDemographic variable importances (shown regardless of overall rank):")
+        for col in sorted(demo_cols, key=lambda c: importance_map[c], reverse=True):
+            label = schema.get(col.upper(), {}).get("description", col)
+            rank = sorted(importance_map, key=importance_map.get, reverse=True).index(col) + 1
+            lines.append(f"  {col} ({label}): importance={round(importance_map[col], 4)}, rank #{rank} of {len(feature_cols)}")
+
     return "\n".join(lines)
 
 

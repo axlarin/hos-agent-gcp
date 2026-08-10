@@ -25,7 +25,7 @@ DeepMode = Union[bool, Literal["auto"]]
 _AUTO_RR_THRESHOLD = 0.5
 _AUTO_AF_THRESHOLD = 0.6
 _AUTO_AQ_THRESHOLD = 0.5
-_AUTO_AQ_GATE = 0.55
+_AUTO_AQ_GATE = 0.45
 
 # Gemini-judge prompts truncate context to this many characters. Context can be
 # the concatenation of multiple retrieval-tool outputs (e.g. search_pdf_guidance

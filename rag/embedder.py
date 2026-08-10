@@ -11,6 +11,7 @@ _model = None
 
 def _get_model():
     global _model
+    # Lazy-load once to avoid model startup cost on module import.
     if _model is None:
         from sentence_transformers import SentenceTransformer
         logger.info("Loading sentence-transformer model: %s", _MODEL_NAME)
@@ -48,5 +49,6 @@ def chunk_text(text: str, chunk_size: int = 512, overlap: int = 64) -> List[str]
     while start < len(text):
         end = min(start + chunk_size, len(text))
         chunks.append(text[start:end])
+        # Slide the window forward while retaining overlap for local context.
         start += chunk_size - overlap
     return chunks
