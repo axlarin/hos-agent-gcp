@@ -211,19 +211,22 @@ WORKFLOWS: dict[str, list[WorkflowStep]] = {
 
 # ── Step dispatcher ───────────────────────────────────────────────────────────
 
-def _dispatch_step(step: WorkflowStep, dataset: str, col: str) -> str:
+def _dispatch_step(
+    step: WorkflowStep, dataset: str, col: str, subset_query: Optional[str] = None
+) -> str:
     from tools.analysis_tools import (
         run_categorical_analysis,
         run_correlation_analysis,
         run_feature_importance,
         run_group_comparison,
     )
+    sq = subset_query
     dispatch = {
-        "categorical":        lambda: run_categorical_analysis(dataset, col),
-        "feature_importance": lambda: run_feature_importance(dataset, col, **step.params),
-        "group_by_sex":       lambda: run_group_comparison(dataset, col, "SEX"),
-        "group_by_age":       lambda: run_group_comparison(dataset, col, "AGE"),
-        "correlation":        lambda: run_correlation_analysis(dataset, col, **step.params),
+        "categorical":        lambda: run_categorical_analysis(dataset, col, subset_query=sq),
+        "feature_importance": lambda: run_feature_importance(dataset, col, subset_query=sq, **step.params),
+        "group_by_sex":       lambda: run_group_comparison(dataset, col, "SEX", subset_query=sq),
+        "group_by_age":       lambda: run_group_comparison(dataset, col, "AGE", subset_query=sq),
+        "correlation":        lambda: run_correlation_analysis(dataset, col, subset_query=sq, **step.params),
     }
     fn = dispatch.get(step.analysis)
     if fn is None:
@@ -238,6 +241,7 @@ def _run_workflow(
     target_column: str,
     workflow: str = "health_profile",
     config: Optional[GateConfig] = None,
+    subset_query: Optional[str] = None,
 ) -> WorkflowResult:
     """Execute a named workflow and return both the report and the execution trace.
 
@@ -308,7 +312,7 @@ def _run_workflow(
 
         t0 = time.perf_counter()
         try:
-            output = _dispatch_step(step, dataset, col)
+            output = _dispatch_step(step, dataset, col, subset_query=subset_query)
             duration_ms = (time.perf_counter() - t0) * 1000
             step_results.append(StepResult(
                 name=step.name, analysis=step.analysis,
@@ -366,6 +370,7 @@ def generate_health_report(
     dataset: str,
     target_column: str,
     workflow: str = "health_profile",
+    subset_query: Optional[str] = None,
 ) -> str:
     """Run a multi-step analytical workflow and return a structured markdown report.
 
@@ -389,12 +394,15 @@ def generate_health_report(
             - "health_profile" — distribution + top predictors (Random Forest) + group
               comparisons by sex and age + top Pearson correlates. Designed for ordinal
               and categorical HOS outcome variables.
+        subset_query: Optional pandas query string to restrict analysis to a subpopulation,
+            e.g. "AGEGROUP >= 2" to exclude members under 65. Run run_categorical_analysis
+            on the age column first to confirm the valid codes.
 
     Returns:
         Structured markdown report with one section per completed analysis, plus an
         Execution Summary table showing the status and timing of every step.
     """
-    result = _run_workflow(dataset, target_column, workflow)
+    result = _run_workflow(dataset, target_column, workflow, subset_query=subset_query)
 
     # Persist the execution trace for observability and testing
     try:

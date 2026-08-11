@@ -61,6 +61,17 @@ Example: "Which variables are associated with downhearted and blue in c25a?"
 → run_categorical_analysis for RACE, MARITAL STATUS, EDUCATION (multi-category)
 → return one ranked summary across all three analyses.
 
+Subsetting / filtering:
+All analysis tools accept an optional subset_query parameter using pandas query syntax.
+Use it whenever the user wants to restrict analysis to a subpopulation:
+  - "exclude members under 65" → first run run_categorical_analysis on the age column to see
+    its valid codes (e.g. AGEGROUP 1=<65, 2=65-74, 3=75+), then pass
+    subset_query="AGEGROUP >= 2" (or whatever code excludes the unwanted group).
+  - "only 65 and older" → same pattern: inspect the column, then filter.
+  - "only females" → inspect SEX codes, then e.g. subset_query="SEX == 2".
+  - Multiple conditions: subset_query="AGEGROUP >= 2 and SEX == 2".
+Always show the subset filter applied and the resulting row count in your response.
+
 Return results with decoded column labels and value mappings, not raw codes.
 """.strip()
 

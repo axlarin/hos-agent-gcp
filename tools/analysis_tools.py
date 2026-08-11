@@ -16,6 +16,25 @@ from sklearn.preprocessing import LabelEncoder
 from tools.csv_tools import get_dataset
 
 
+def _apply_subset(df: pd.DataFrame, subset_query: Optional[str]) -> pd.DataFrame:
+    """Apply a pandas query string to filter rows. Returns unchanged df if query is None."""
+    if not subset_query:
+        return df
+    try:
+        filtered = df.query(subset_query)
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid subset_query '{subset_query}': {exc}. "
+            "Use pandas query syntax, e.g. \"AGE >= 65\" or \"AGEGROUP in [2, 3]\""
+        ) from exc
+    if filtered.empty:
+        raise ValueError(
+            f"subset_query '{subset_query}' matched no rows. "
+            "Check column codes and values with run_categorical_analysis first."
+        )
+    return filtered
+
+
 def _decode_series(series: pd.Series, column: str, schema: dict) -> pd.Series:
     """Replace numeric codes with plain-English labels where available."""
     entry = schema.get(column.upper(), {})
@@ -30,18 +49,24 @@ def _load_schema() -> dict:
     return SchemaBuilder.get_cached_schema()
 
 
-def run_correlation_analysis(dataset: str, target_column: str, top_n: int = 10) -> str:
+def run_correlation_analysis(
+    dataset: str, target_column: str, top_n: int = 10, subset_query: Optional[str] = None
+) -> str:
     """Run Pearson correlation between target_column and all numeric columns in the dataset.
 
     Args:
         dataset: Dataset name or partial name (e.g. 'c25a' or 'c25a_puf').
         target_column: Column to correlate against (case-insensitive).
         top_n: Number of top correlated columns to return (default 10).
+        subset_query: Optional pandas query string to filter rows before analysis,
+                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]". Run
+                      run_categorical_analysis first if unsure of valid column codes/values.
 
     Returns:
         Ranked list of columns most correlated with target_column, with labels and r values.
     """
     df = get_dataset(dataset)
+    df = _apply_subset(df, subset_query)
     schema = _load_schema()
 
     target = _find_column(df, target_column)
@@ -67,18 +92,23 @@ def run_correlation_analysis(dataset: str, target_column: str, top_n: int = 10) 
     return "\n".join(lines)
 
 
-def run_feature_importance(dataset: str, target_column: str, top_n: int = 10) -> str:
+def run_feature_importance(
+    dataset: str, target_column: str, top_n: int = 10, subset_query: Optional[str] = None
+) -> str:
     """Run Random Forest feature importance to identify predictors of target_column.
 
     Args:
         dataset: Dataset name or partial name.
         target_column: Binary or categorical outcome column (case-insensitive).
         top_n: Number of top features to return (default 10).
+        subset_query: Optional pandas query string to filter rows before analysis,
+                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
 
     Returns:
         Ranked list of feature importances with plain-English labels.
     """
     df = get_dataset(dataset)
+    df = _apply_subset(df, subset_query)
     schema = _load_schema()
 
     target = _find_column(df, target_column)
@@ -123,6 +153,7 @@ def run_logistic_regression(
     target_column: str,
     feature_columns: list[str],
     positive_values: Optional[list] = None,
+    subset_query: Optional[str] = None,
 ) -> str:
     """Run logistic regression predicting target_column from feature_columns.
 
@@ -132,11 +163,14 @@ def run_logistic_regression(
         feature_columns: List of predictor column names.
         positive_values: Values of target_column to treat as 1 (positive class).
                          Required when target has more than 2 unique values.
+        subset_query: Optional pandas query string to filter rows before analysis,
+                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
 
     Returns:
         Coefficients, odds ratios, p-values, and model accuracy.
     """
     df = get_dataset(dataset)
+    df = _apply_subset(df, subset_query)
     schema = _load_schema()
 
     target = _find_column(df, target_column)
@@ -168,18 +202,26 @@ def run_logistic_regression(
     return "\n".join(lines)
 
 
-def run_categorical_analysis(dataset: str, column1: str, column2: Optional[str] = None) -> str:
+def run_categorical_analysis(
+    dataset: str,
+    column1: str,
+    column2: Optional[str] = None,
+    subset_query: Optional[str] = None,
+) -> str:
     """Run frequency table (1 column) or cross-tabulation + chi-square + Cramér's V (2 columns).
 
     Args:
         dataset: Dataset name or partial name.
         column1: First column — required.
         column2: Second column — if provided, runs crosstab + chi-square + Cramér's V.
+        subset_query: Optional pandas query string to filter rows before analysis,
+                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
 
     Returns:
         Frequency table or crosstab with chi-square statistics and effect size.
     """
     df = get_dataset(dataset)
+    df = _apply_subset(df, subset_query)
     schema = _load_schema()
 
     col1 = _find_column(df, column1)
@@ -209,7 +251,12 @@ def run_categorical_analysis(dataset: str, column1: str, column2: Optional[str] 
     return "\n".join(lines)
 
 
-def run_group_comparison(dataset: str, value_column: str, group_column: str) -> str:
+def run_group_comparison(
+    dataset: str,
+    value_column: str,
+    group_column: str,
+    subset_query: Optional[str] = None,
+) -> str:
     """Compare value_column across groups defined by group_column.
 
     Automatically selects Mann-Whitney U (2 groups) or Kruskal-Wallis (3+ groups).
@@ -218,11 +265,14 @@ def run_group_comparison(dataset: str, value_column: str, group_column: str) -> 
         dataset: Dataset name or partial name.
         value_column: Continuous or ordinal variable to compare (case-insensitive).
         group_column: Categorical variable that defines groups (case-insensitive).
+        subset_query: Optional pandas query string to filter rows before analysis,
+                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
 
     Returns:
         Test statistic, p-value, and group medians with decoded labels.
     """
     df = get_dataset(dataset)
+    df = _apply_subset(df, subset_query)
     schema = _load_schema()
 
     val_col = _find_column(df, value_column)
