@@ -42,7 +42,12 @@ Tool selection:
 - run_correlation_analysis    — "what is related to X?" (single analysis)
 - run_feature_importance      — "what predicts X?" (single analysis); use top_n=20 so
                                  demographic variables (age, sex, race, education) are not
-                                 cut off by other high-ranking clinical items
+                                 cut off by other high-ranking clinical items.
+                                 encode_multilevel=True (default) one-hot encodes all columns
+                                 with 3+ response levels (Likert scales, multi-category items)
+                                 so the model learns independent weights per response level —
+                                 this matches CMS methodology. Output reports total_importance
+                                 per variable (sum across its levels) plus the strongest level.
 - run_logistic_regression     — regression on binary / recoded outcome; ask for recoding if outcome
                                  has more than 2 values
 - run_categorical_analysis    — frequency table (1 column) or crosstab + chi-square + Cramér's V

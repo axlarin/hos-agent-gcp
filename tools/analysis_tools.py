@@ -92,10 +92,57 @@ def run_correlation_analysis(
     return "\n".join(lines)
 
 
+def _dummy_encode_multilevel(
+    df: pd.DataFrame, feature_cols: list[str], schema: dict
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """One-hot encode columns with 3+ value_labels (ordinal/nominal multi-level responses).
+
+    Binary columns (≤2 unique coded values) and continuous columns (no value_labels)
+    are kept as numeric. Returns the expanded DataFrame and a label_map that translates
+    dummy column names (e.g. 'B25VRDOWN_3') to plain-English descriptions
+    (e.g. 'Downhearted and Blue: A good bit of the time').
+    """
+    to_encode, to_keep = [], []
+    for col in feature_cols:
+        vl = schema.get(col.upper(), {}).get("value_labels", {})
+        if len(vl) >= 3:
+            to_encode.append(col)
+        else:
+            to_keep.append(col)
+
+    if not to_encode:
+        return df[feature_cols], {}
+
+    label_map: dict[str, str] = {}
+    dummy_frames = []
+    for col in to_encode:
+        vl = schema.get(col.upper(), {}).get("value_labels", {})
+        col_int = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
+        for code_str, level_label in sorted(vl.items(), key=lambda x: int(x[0])):
+            code = int(code_str)
+            dummy_name = f"{col}_{code}"
+            dummy_frames.append(
+                pd.Series((col_int == code).astype(int), name=dummy_name, index=df.index)
+            )
+            label_map[dummy_name] = f"{col}: {level_label}"
+
+    expanded = pd.concat([df[to_keep]] + dummy_frames, axis=1)
+    return expanded, label_map
+
+
 def run_feature_importance(
-    dataset: str, target_column: str, top_n: int = 10, subset_query: Optional[str] = None
+    dataset: str,
+    target_column: str,
+    top_n: int = 10,
+    subset_query: Optional[str] = None,
+    encode_multilevel: bool = True,
 ) -> str:
     """Run Random Forest feature importance to identify predictors of target_column.
+
+    Multi-level survey responses (3+ coded answer levels, e.g. Likert scales) are
+    one-hot encoded by default so the model learns independent weights per response
+    level rather than treating the numeric codes as a continuous ordinal scale.
+    This matches the CMS approach for HOS survey data.
 
     Args:
         dataset: Dataset name or partial name.
@@ -103,9 +150,14 @@ def run_feature_importance(
         top_n: Number of top features to return (default 10).
         subset_query: Optional pandas query string to filter rows before analysis,
                       e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
+        encode_multilevel: If True (default), one-hot encode columns with ≥3 coded
+                           response levels before fitting. Binary and continuous
+                           columns are always kept as numeric.
 
     Returns:
-        Ranked list of feature importances with plain-English labels.
+        Ranked list of feature importances with plain-English labels. When
+        encode_multilevel=True, reports total importance per original variable
+        (sum across its dummy columns) plus the single most important response level.
     """
     df = get_dataset(dataset)
     df = _apply_subset(df, subset_query)
@@ -115,35 +167,74 @@ def run_feature_importance(
     feature_cols = [c for c in df.select_dtypes(include="number").columns if c != target]
 
     sub = df[[target] + feature_cols].dropna()
-    X = sub[feature_cols]
     y = sub[target]
+
+    if encode_multilevel:
+        X_expanded, label_map = _dummy_encode_multilevel(sub, feature_cols, schema)
+        X = X_expanded.fillna(0)
+    else:
+        X = sub[feature_cols]
+        label_map = {}
 
     # n_estimators=50 and max_samples=0.3 keep results statistically solid
     # while cutting fit time ~3-4x on large HOS datasets (263k+ rows).
     clf = RandomForestClassifier(n_estimators=50, max_samples=0.3, random_state=42, n_jobs=-1)
     clf.fit(X, y)
 
-    importance_map = dict(zip(feature_cols, clf.feature_importances_))
-    importances = sorted(importance_map.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    dummy_importance = dict(zip(X.columns, clf.feature_importances_))
 
-    lines = [f"Top {top_n} predictors of {target_column} in {dataset} (Random Forest):\n"]
-    for col, imp in importances:
-        label = schema.get(col.upper(), {}).get("description", col)
-        lines.append(f"  {col} ({label}): importance={round(imp, 4)}")
+    if encode_multilevel:
+        # Aggregate dummy importances back to original variable level
+        var_importance: dict[str, float] = {}
+        var_top_level: dict[str, tuple[str, float]] = {}  # col -> (level_label, imp)
+        for dummy_col, imp in dummy_importance.items():
+            # Recover original column name: everything before the last underscore+digits
+            orig = dummy_col.rsplit("_", 1)[0] if dummy_col in label_map else dummy_col
+            var_importance[orig] = var_importance.get(orig, 0.0) + imp
+            if dummy_col in label_map:
+                current = var_top_level.get(orig, ("", 0.0))
+                if imp > current[1]:
+                    var_top_level[orig] = (label_map[dummy_col], imp)
+    else:
+        var_importance = dummy_importance
+        var_top_level = {}
+
+    ranked_vars = sorted(var_importance.items(), key=lambda x: x[1], reverse=True)
+    total_vars = len(ranked_vars)
+
+    encoding_note = " (dummy-encoded multi-level responses)" if encode_multilevel else ""
+    lines = [f"Top {top_n} predictors of {target_column} in {dataset}"
+             f" (Random Forest{encoding_note}):\n"]
+
+    for rank_i, (col, total_imp) in enumerate(ranked_vars[:top_n], 1):
+        entry = schema.get(col.upper(), {})
+        label = entry.get("description", col)
+        line = f"  #{rank_i} {col} ({label}): total_importance={round(total_imp, 4)}"
+        if col in var_top_level:
+            top_label, top_imp = var_top_level[col]
+            # strip "col: " prefix already in label_map value
+            level_only = top_label.split(": ", 1)[-1]
+            line += f"  [strongest level: '{level_only}' imp={round(top_imp, 4)}]"
+        lines.append(line)
 
     # Always report demographic variables separately so they are not silently
     # excluded when clinical items dominate the top_n ranking.
     _DEMOGRAPHIC_KEYWORDS = ["age", "sex", "race", "education", "marital", "educ"]
-    demo_cols = [
-        c for c in feature_cols
-        if any(kw in c.lower() for kw in _DEMOGRAPHIC_KEYWORDS)
-    ]
-    if demo_cols:
+    demo_orig = [c for c in var_importance if any(kw in c.lower() for kw in _DEMOGRAPHIC_KEYWORDS)]
+    if demo_orig:
         lines.append("\nDemographic variable importances (shown regardless of overall rank):")
-        for col in sorted(demo_cols, key=lambda c: importance_map[c], reverse=True):
-            label = schema.get(col.upper(), {}).get("description", col)
-            rank = sorted(importance_map, key=importance_map.get, reverse=True).index(col) + 1
-            lines.append(f"  {col} ({label}): importance={round(importance_map[col], 4)}, rank #{rank} of {len(feature_cols)}")
+        all_ranked = [c for c, _ in ranked_vars]
+        for col in sorted(demo_orig, key=lambda c: var_importance[c], reverse=True):
+            entry = schema.get(col.upper(), {})
+            label = entry.get("description", col)
+            rank = all_ranked.index(col) + 1
+            line = (f"  {col} ({label}): total_importance={round(var_importance[col], 4)}"
+                    f", rank #{rank} of {total_vars}")
+            if col in var_top_level:
+                top_label, top_imp = var_top_level[col]
+                level_only = top_label.split(": ", 1)[-1]
+                line += f"  [strongest level: '{level_only}' imp={round(top_imp, 4)}]"
+            lines.append(line)
 
     return "\n".join(lines)
 
