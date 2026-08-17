@@ -112,28 +112,42 @@ def run_correlation_analysis(
 def _dummy_encode_multilevel(
     df: pd.DataFrame, feature_cols: list[str], schema: dict
 ) -> tuple[pd.DataFrame, dict[str, str]]:
-    """One-hot encode columns with 3+ value_labels (ordinal/nominal multi-level responses).
+    """One-hot encode columns with 3+ response levels (ordinal/nominal multi-level responses).
 
-    Binary columns (≤2 unique coded values) and continuous columns (no value_labels)
-    are kept as numeric. Returns the expanded DataFrame and a label_map that translates
-    dummy column names (e.g. 'B25VRDOWN_3') to plain-English descriptions
-    (e.g. 'Downhearted and Blue: A good bit of the time').
+    Decision logic per column:
+    - Schema has 3+ value_labels → encode using schema labels (primary path)
+    - Schema has 0-2 value_labels but column has 3-15 integer-valued unique codes
+      → encode using data-driven codes (fallback for columns the PDF parser missed)
+    - Otherwise (binary, continuous) → keep as numeric
+
+    Returns the expanded DataFrame and a label_map translating dummy column names
+    (e.g. 'B25VRDOWN_3') to plain-English descriptions ('Downhearted and Blue: A good bit of the time').
     """
-    to_encode, to_keep = [], []
+    to_encode: list[tuple[str, dict]] = []  # (col, vl_dict)
+    to_keep: list[str] = []
+
     for col in feature_cols:
         vl = schema.get(col.upper(), {}).get("value_labels", {})
         if len(vl) >= 3:
-            to_encode.append(col)
-        else:
-            to_keep.append(col)
+            to_encode.append((col, vl))
+        elif len(vl) < 3:
+            # Fallback: check if column looks like a coded categorical in the data
+            col_vals = pd.to_numeric(df[col], errors="coerce").dropna()
+            is_integer_like = len(col_vals) > 0 and (col_vals == col_vals.round()).all()
+            n_uniq = int(col_vals.nunique())
+            if is_integer_like and 3 <= n_uniq <= 15:
+                # Build codes from data; labels will just be the code value (no schema text)
+                data_vl = {str(int(v)): str(int(v)) for v in sorted(col_vals.unique())}
+                to_encode.append((col, data_vl))
+            else:
+                to_keep.append(col)
 
     if not to_encode:
         return df[feature_cols], {}
 
     label_map: dict[str, str] = {}
     dummy_frames = []
-    for col in to_encode:
-        vl = schema.get(col.upper(), {}).get("value_labels", {})
+    for col, vl in to_encode:
         col_int = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
         for code_str, level_label in sorted(vl.items(), key=lambda x: int(x[0])):
             code = int(code_str)
@@ -200,7 +214,24 @@ def run_feature_importance(
     clf = RandomForestClassifier(n_estimators=50, max_samples=0.3, random_state=42, n_jobs=-1)
     clf.fit(X, y)
 
-    dummy_importance = dict(zip(X.columns, clf.feature_importances_))
+    # SHAP TreeExplainer: more reliable than Gini importance — handles correlated
+    # features and dummy-encoded groups correctly. Sample up to 5k rows for speed.
+    try:
+        import shap
+        X_shap = X.sample(min(5000, len(X)), random_state=42)
+        explainer = shap.TreeExplainer(clf)
+        shap_vals = explainer.shap_values(X_shap, check_additivity=False)
+        # Multi-class → list of per-class arrays; binary → single array
+        if isinstance(shap_vals, list):
+            mean_abs = np.mean([np.abs(sv).mean(axis=0) for sv in shap_vals], axis=0)
+        else:
+            mean_abs = np.abs(shap_vals).mean(axis=0)
+        dummy_importance = dict(zip(X.columns, mean_abs.tolist()))
+        importance_method = "SHAP"
+    except Exception as exc:
+        logger.warning("SHAP failed, falling back to RF Gini importance: %s", exc)
+        dummy_importance = dict(zip(X.columns, clf.feature_importances_))
+        importance_method = "RF Gini"
 
     if encode_multilevel:
         # Aggregate dummy importances back to original variable level
@@ -221,8 +252,8 @@ def run_feature_importance(
     ranked_vars = sorted(var_importance.items(), key=lambda x: x[1], reverse=True)
     total_vars = len(ranked_vars)
 
-    encoding_note = " (dummy-encoded multi-level responses)" if encode_multilevel else ""
-    header = f"Top {top_n} predictors of {target_column} in {dataset} (Random Forest{encoding_note})"
+    encoding_note = ", dummy-encoded multi-level responses" if encode_multilevel else ""
+    header = f"Top {top_n} predictors of {target_column} in {dataset} (Random Forest + {importance_method}{encoding_note})"
     if filter_desc:
         header += f" {filter_desc}"
     lines = [header + ":\n"]

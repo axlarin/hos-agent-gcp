@@ -103,6 +103,9 @@ Age group column is AGE with values: 1=Less than 65, 2=65 to 74, 3=75 and older.
 
 Always show the filter and resulting row count (returned in the tool output) in your response.
 
+Always mention the dataset name (e.g., "in c25a" or "using the c25a baseline dataset") in
+your final response when reporting any analysis result, even when the tool output already shows it.
+
 Return results with decoded column labels and value mappings, not raw codes.
 """.strip()
 

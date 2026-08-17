@@ -50,7 +50,9 @@ User / API client
 
 **Subpopulation planner** (`_resolve_subset`): instead of asking Gemini to generate raw pandas query strings (which are error-prone — wrong column names, Unicode operators), all analysis tools accept `subset_column` (natural-language column name, resolved by `_find_column`) and `subset_codes` (list of integer codes from the column's `value_labels`). The planner builds the filter with `.isin()` deterministically — no string parsing or operator generation by the LLM.
 
-**CMS-style dummy encoding** (`_dummy_encode_multilevel`): columns with 3+ `value_labels` (Likert scales, multi-category items) are one-hot encoded before Random Forest fitting so the model learns independent weights per response level. Importances are then aggregated back to the original variable level (`total_importance`) and the strongest individual level is surfaced alongside it.
+**CMS-style dummy encoding** (`_dummy_encode_multilevel`): columns with 3+ `value_labels` (Likert scales, multi-category items) are one-hot encoded before Random Forest fitting. Fallback: if the schema has no `value_labels` for a column (PDF parser miss) but the column has 3–15 unique integer values, it is still encoded. Importances are aggregated back to the original variable level (`total_importance`) and the strongest response level is surfaced alongside it.
+
+**SHAP variable importance**: `run_feature_importance` uses SHAP `TreeExplainer` (mean absolute SHAP values) instead of raw RF Gini importance. SHAP correctly handles correlated features and dummy-encoded groups — each dummy column gets an independent SHAP score that aggregates cleanly to the original variable. A sample of 5,000 rows is used for speed; falls back to RF Gini if SHAP is unavailable.
 
 ---
 
@@ -64,7 +66,7 @@ User / API client
 | API | FastAPI + uvicorn |
 | RAG index | ChromaDB (persistent, synced to GCS) |
 | Embeddings | `all-MiniLM-L6-v2` (sentence-transformers) |
-| Analysis | pandas, scipy, scikit-learn |
+| Analysis | pandas, scipy, scikit-learn, shap |
 | Schema cache | `schema_memory.json` (PDF-parsed + Gemini fallback) |
 | Runtime | GCP Cloud Run (2 vCPU, 2 GiB, min-instances 0) |
 | CI/CD | GitHub Actions → Artifact Registry → Cloud Run |
@@ -235,7 +237,7 @@ agents/
 tools/
   pdf_tools.py           — search_pdf_guidance (ChromaDB), get_column_info, acronym expansion
   csv_tools.py           — list_datasets, get_dataset, column info delegation
-  analysis_tools.py      — 5 statistical tools + _find_column (3-tier) + _resolve_subset (planner) + _dummy_encode_multilevel (CMS encoding)
+  analysis_tools.py      — 5 statistical tools + _find_column (3-tier) + _resolve_subset (planner) + _dummy_encode_multilevel (CMS encoding + data-driven fallback) + SHAP importance
   report_tools.py        — workflow engine: GateConfig, WORKFLOWS, _run_workflow, generate_health_report
 
 rag/
