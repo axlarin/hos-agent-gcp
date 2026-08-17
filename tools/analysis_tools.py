@@ -16,23 +16,33 @@ from sklearn.preprocessing import LabelEncoder
 from tools.csv_tools import get_dataset
 
 
-def _apply_subset(df: pd.DataFrame, subset_query: Optional[str]) -> pd.DataFrame:
-    """Apply a pandas query string to filter rows. Returns unchanged df if query is None."""
-    if not subset_query:
-        return df
-    try:
-        filtered = df.query(subset_query)
-    except Exception as exc:
-        raise ValueError(
-            f"Invalid subset_query '{subset_query}': {exc}. "
-            "Use pandas query syntax, e.g. \"AGE >= 65\" or \"AGEGROUP in [2, 3]\""
-        ) from exc
+def _resolve_subset(
+    df: pd.DataFrame,
+    subset_column: Optional[str],
+    subset_codes: Optional[list],
+) -> tuple[pd.DataFrame, str]:
+    """Filter df to rows where subset_column value is in subset_codes.
+
+    Returns (filtered_df, filter_description). filter_description is an empty string
+    when no filter is applied. Uses _find_column so natural-language column names work.
+    subset_codes must be the exact numeric codes from the column's value_labels.
+    """
+    if not subset_column or not subset_codes:
+        return df, ""
+
+    col = _find_column(df, subset_column)
+    codes = [int(c) for c in subset_codes]
+    col_numeric = pd.to_numeric(df[col], errors="coerce")
+    filtered = df[col_numeric.isin(codes)]
+
     if filtered.empty:
         raise ValueError(
-            f"subset_query '{subset_query}' matched no rows. "
-            "Check column codes and values with run_categorical_analysis first."
+            f"subset_column='{subset_column}' (resolved: '{col}') with subset_codes={codes} "
+            "matched no rows. Check valid codes with run_categorical_analysis first."
         )
-    return filtered
+
+    desc = f"[Filtered: {col} in {codes} — {len(filtered):,} rows]"
+    return filtered, desc
 
 
 def _decode_series(series: pd.Series, column: str, schema: dict) -> pd.Series:
@@ -50,7 +60,11 @@ def _load_schema() -> dict:
 
 
 def run_correlation_analysis(
-    dataset: str, target_column: str, top_n: int = 10, subset_query: Optional[str] = None
+    dataset: str,
+    target_column: str,
+    top_n: int = 10,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> str:
     """Run Pearson correlation between target_column and all numeric columns in the dataset.
 
@@ -58,15 +72,15 @@ def run_correlation_analysis(
         dataset: Dataset name or partial name (e.g. 'c25a' or 'c25a_puf').
         target_column: Column to correlate against (case-insensitive).
         top_n: Number of top correlated columns to return (default 10).
-        subset_query: Optional pandas query string to filter rows before analysis,
-                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]". Run
-                      run_categorical_analysis first if unsure of valid column codes/values.
+        subset_column: Optional column to filter on (e.g. "age group" or "AGE").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
+                      Look up valid codes with run_categorical_analysis first.
 
     Returns:
         Ranked list of columns most correlated with target_column, with labels and r values.
     """
     df = get_dataset(dataset)
-    df = _apply_subset(df, subset_query)
+    df, filter_desc = _resolve_subset(df, subset_column, subset_codes)
     schema = _load_schema()
 
     target = _find_column(df, target_column)
@@ -84,7 +98,10 @@ def run_correlation_analysis(
 
     sorted_cols = sorted(correlations, key=lambda c: abs(correlations[c][0]), reverse=True)[:top_n]
 
-    lines = [f"Top {top_n} Pearson correlations with {target_column} in {dataset}:\n"]
+    header = f"Top {top_n} Pearson correlations with {target_column} in {dataset}"
+    if filter_desc:
+        header += f" {filter_desc}"
+    lines = [header + ":\n"]
     for col in sorted_cols:
         r, p = correlations[col]
         label = schema.get(col.upper(), {}).get("description", col)
@@ -134,7 +151,8 @@ def run_feature_importance(
     dataset: str,
     target_column: str,
     top_n: int = 10,
-    subset_query: Optional[str] = None,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
     encode_multilevel: bool = True,
 ) -> str:
     """Run Random Forest feature importance to identify predictors of target_column.
@@ -148,8 +166,9 @@ def run_feature_importance(
         dataset: Dataset name or partial name.
         target_column: Binary or categorical outcome column (case-insensitive).
         top_n: Number of top features to return (default 10).
-        subset_query: Optional pandas query string to filter rows before analysis,
-                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
+        subset_column: Optional column to filter on (e.g. "age group" or "AGE").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
+                      Look up valid codes with run_categorical_analysis first.
         encode_multilevel: If True (default), one-hot encode columns with ≥3 coded
                            response levels before fitting. Binary and continuous
                            columns are always kept as numeric.
@@ -160,7 +179,7 @@ def run_feature_importance(
         (sum across its dummy columns) plus the single most important response level.
     """
     df = get_dataset(dataset)
-    df = _apply_subset(df, subset_query)
+    df, filter_desc = _resolve_subset(df, subset_column, subset_codes)
     schema = _load_schema()
 
     target = _find_column(df, target_column)
@@ -203,8 +222,10 @@ def run_feature_importance(
     total_vars = len(ranked_vars)
 
     encoding_note = " (dummy-encoded multi-level responses)" if encode_multilevel else ""
-    lines = [f"Top {top_n} predictors of {target_column} in {dataset}"
-             f" (Random Forest{encoding_note}):\n"]
+    header = f"Top {top_n} predictors of {target_column} in {dataset} (Random Forest{encoding_note})"
+    if filter_desc:
+        header += f" {filter_desc}"
+    lines = [header + ":\n"]
 
     for rank_i, (col, total_imp) in enumerate(ranked_vars[:top_n], 1):
         entry = schema.get(col.upper(), {})
@@ -244,7 +265,8 @@ def run_logistic_regression(
     target_column: str,
     feature_columns: list[str],
     positive_values: Optional[list] = None,
-    subset_query: Optional[str] = None,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> str:
     """Run logistic regression predicting target_column from feature_columns.
 
@@ -254,14 +276,14 @@ def run_logistic_regression(
         feature_columns: List of predictor column names.
         positive_values: Values of target_column to treat as 1 (positive class).
                          Required when target has more than 2 unique values.
-        subset_query: Optional pandas query string to filter rows before analysis,
-                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
+        subset_column: Optional column to filter on (e.g. "age group" or "AGE").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
 
     Returns:
         Coefficients, odds ratios, p-values, and model accuracy.
     """
     df = get_dataset(dataset)
-    df = _apply_subset(df, subset_query)
+    df, filter_desc = _resolve_subset(df, subset_column, subset_codes)
     schema = _load_schema()
 
     target = _find_column(df, target_column)
@@ -283,9 +305,10 @@ def run_logistic_regression(
     model.fit(X, y)
     accuracy = round(model.score(X, y), 4)
 
-    lines = [f"Logistic regression — target: {target_column}, dataset: {dataset}\n",
-             f"Accuracy: {accuracy}\n",
-             "Coefficients:"]
+    header = f"Logistic regression — target: {target_column}, dataset: {dataset}"
+    if filter_desc:
+        header += f" {filter_desc}"
+    lines = [header + "\n", f"Accuracy: {accuracy}\n", "Coefficients:"]
     for col, coef in zip(features, model.coef_[0]):
         label = schema.get(col.upper(), {}).get("description", col)
         or_ = round(float(np.exp(coef)), 4)
@@ -297,7 +320,8 @@ def run_categorical_analysis(
     dataset: str,
     column1: str,
     column2: Optional[str] = None,
-    subset_query: Optional[str] = None,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> str:
     """Run frequency table (1 column) or cross-tabulation + chi-square + Cramér's V (2 columns).
 
@@ -305,14 +329,14 @@ def run_categorical_analysis(
         dataset: Dataset name or partial name.
         column1: First column — required.
         column2: Second column — if provided, runs crosstab + chi-square + Cramér's V.
-        subset_query: Optional pandas query string to filter rows before analysis,
-                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
+        subset_column: Optional column to filter on (e.g. "age group" or "AGE").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
 
     Returns:
         Frequency table or crosstab with chi-square statistics and effect size.
     """
     df = get_dataset(dataset)
-    df = _apply_subset(df, subset_query)
+    df, filter_desc = _resolve_subset(df, subset_column, subset_codes)
     schema = _load_schema()
 
     col1 = _find_column(df, column1)
@@ -321,7 +345,10 @@ def run_categorical_analysis(
         freq = df[col1].value_counts().sort_index()
         entry = schema.get(col1.upper(), {})
         value_map = entry.get("values", {})
-        lines = [f"Frequency table for {col1} ({entry.get('description', col1)}) in {dataset}:\n"]
+        header = f"Frequency table for {col1} ({entry.get('description', col1)}) in {dataset}"
+        if filter_desc:
+            header += f" {filter_desc}"
+        lines = [header + ":\n"]
         for val, count in freq.items():
             label = value_map.get(str(int(val)), val) if value_map else val
             pct = round(100 * count / len(df), 1)
@@ -334,8 +361,11 @@ def run_categorical_analysis(
     n = ct.values.sum()
     cramers_v = round(float(np.sqrt(chi2 / (n * (min(ct.shape) - 1)))), 4)
 
+    header = f"Cross-tabulation: {col1} × {col2} in {dataset}"
+    if filter_desc:
+        header += f" {filter_desc}"
     lines = [
-        f"Cross-tabulation: {col1} × {col2} in {dataset}",
+        header,
         f"Chi-square={round(chi2, 2)}, p={round(p, 6)}, dof={dof}, Cramér's V={cramers_v}\n",
         ct.to_string(),
     ]
@@ -346,7 +376,8 @@ def run_group_comparison(
     dataset: str,
     value_column: str,
     group_column: str,
-    subset_query: Optional[str] = None,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> str:
     """Compare value_column across groups defined by group_column.
 
@@ -356,14 +387,14 @@ def run_group_comparison(
         dataset: Dataset name or partial name.
         value_column: Continuous or ordinal variable to compare (case-insensitive).
         group_column: Categorical variable that defines groups (case-insensitive).
-        subset_query: Optional pandas query string to filter rows before analysis,
-                      e.g. "AGE >= 65" or "AGEGROUP in [2, 3]".
+        subset_column: Optional column to filter on (e.g. "age group" or "AGE").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
 
     Returns:
         Test statistic, p-value, and group medians with decoded labels.
     """
     df = get_dataset(dataset)
-    df = _apply_subset(df, subset_query)
+    df, filter_desc = _resolve_subset(df, subset_column, subset_codes)
     schema = _load_schema()
 
     val_col = _find_column(df, value_column)
@@ -383,7 +414,10 @@ def run_group_comparison(
         return f"Not enough groups in '{group_column}' to compare (need ≥ 2 groups with ≥ 5 observations)."
 
     val_entry = schema.get(val_col.upper(), {})
-    lines = [f"Group comparison: {val_col} ({val_entry.get('description', val_col)}) by {grp_col}\n"]
+    header = f"Group comparison: {val_col} ({val_entry.get('description', val_col)}) by {grp_col}"
+    if filter_desc:
+        header += f" {filter_desc}"
+    lines = [header + "\n"]
     for label, data in groups.items():
         lines.append(f"  {label}: n={len(data):,}, median={round(float(np.median(data)), 2)}")
 

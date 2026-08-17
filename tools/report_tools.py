@@ -212,7 +212,11 @@ WORKFLOWS: dict[str, list[WorkflowStep]] = {
 # ── Step dispatcher ───────────────────────────────────────────────────────────
 
 def _dispatch_step(
-    step: WorkflowStep, dataset: str, col: str, subset_query: Optional[str] = None
+    step: WorkflowStep,
+    dataset: str,
+    col: str,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> str:
     from tools.analysis_tools import (
         run_categorical_analysis,
@@ -220,13 +224,13 @@ def _dispatch_step(
         run_feature_importance,
         run_group_comparison,
     )
-    sq = subset_query
+    sc, scd = subset_column, subset_codes
     dispatch = {
-        "categorical":        lambda: run_categorical_analysis(dataset, col, subset_query=sq),
-        "feature_importance": lambda: run_feature_importance(dataset, col, subset_query=sq, **step.params),
-        "group_by_sex":       lambda: run_group_comparison(dataset, col, "SEX", subset_query=sq),
-        "group_by_age":       lambda: run_group_comparison(dataset, col, "AGE", subset_query=sq),
-        "correlation":        lambda: run_correlation_analysis(dataset, col, subset_query=sq, **step.params),
+        "categorical":        lambda: run_categorical_analysis(dataset, col, subset_column=sc, subset_codes=scd),
+        "feature_importance": lambda: run_feature_importance(dataset, col, subset_column=sc, subset_codes=scd, **step.params),
+        "group_by_sex":       lambda: run_group_comparison(dataset, col, "SEX", subset_column=sc, subset_codes=scd),
+        "group_by_age":       lambda: run_group_comparison(dataset, col, "AGE", subset_column=sc, subset_codes=scd),
+        "correlation":        lambda: run_correlation_analysis(dataset, col, subset_column=sc, subset_codes=scd, **step.params),
     }
     fn = dispatch.get(step.analysis)
     if fn is None:
@@ -241,7 +245,8 @@ def _run_workflow(
     target_column: str,
     workflow: str = "health_profile",
     config: Optional[GateConfig] = None,
-    subset_query: Optional[str] = None,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> WorkflowResult:
     """Execute a named workflow and return both the report and the execution trace.
 
@@ -312,7 +317,7 @@ def _run_workflow(
 
         t0 = time.perf_counter()
         try:
-            output = _dispatch_step(step, dataset, col, subset_query=subset_query)
+            output = _dispatch_step(step, dataset, col, subset_column=subset_column, subset_codes=subset_codes)
             duration_ms = (time.perf_counter() - t0) * 1000
             step_results.append(StepResult(
                 name=step.name, analysis=step.analysis,
@@ -370,7 +375,8 @@ def generate_health_report(
     dataset: str,
     target_column: str,
     workflow: str = "health_profile",
-    subset_query: Optional[str] = None,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
 ) -> str:
     """Run a multi-step analytical workflow and return a structured markdown report.
 
@@ -394,15 +400,15 @@ def generate_health_report(
             - "health_profile" — distribution + top predictors (Random Forest) + group
               comparisons by sex and age + top Pearson correlates. Designed for ordinal
               and categorical HOS outcome variables.
-        subset_query: Optional pandas query string to restrict analysis to a subpopulation,
-            e.g. "AGEGROUP >= 2" to exclude members under 65. Run run_categorical_analysis
-            on the age column first to confirm the valid codes.
+        subset_column: Optional column to filter on before running any step (e.g. "age group").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
+                      Look up valid codes with run_categorical_analysis first.
 
     Returns:
         Structured markdown report with one section per completed analysis, plus an
         Execution Summary table showing the status and timing of every step.
     """
-    result = _run_workflow(dataset, target_column, workflow, subset_query=subset_query)
+    result = _run_workflow(dataset, target_column, workflow, subset_column=subset_column, subset_codes=subset_codes)
 
     # Persist the execution trace for observability and testing
     try:

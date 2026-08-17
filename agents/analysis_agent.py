@@ -85,15 +85,23 @@ Example: "Which variables are associated with downhearted and blue in c25a?"
 → return one ranked summary across all three analyses.
 
 Subsetting / filtering:
-All analysis tools accept an optional subset_query parameter using pandas query syntax.
-Use it whenever the user wants to restrict analysis to a subpopulation:
-  - "exclude members under 65" → first run run_categorical_analysis on the age column to see
-    its valid codes (e.g. AGEGROUP 1=<65, 2=65-74, 3=75+), then pass
-    subset_query="AGEGROUP >= 2" (or whatever code excludes the unwanted group).
-  - "only 65 and older" → same pattern: inspect the column, then filter.
-  - "only females" → inspect SEX codes, then e.g. subset_query="SEX == 2".
-  - Multiple conditions: subset_query="AGEGROUP >= 2 and SEX == 2".
-Always show the subset filter applied and the resulting row count in your response.
+All analysis tools accept subset_column and subset_codes to restrict analysis to a subpopulation.
+These are structured parameters — no query string syntax needed.
+
+  subset_column: the column to filter on (natural-language name OR exact code)
+  subset_codes:  list of integer codes to KEEP — look them up from the column's value_labels
+
+Age group column is AGE with values: 1=Less than 65, 2=65 to 74, 3=75 and older.
+  - "members above 65" / "65 and older" / "exclude under 65" →
+      subset_column="AGE", subset_codes=[2, 3]
+  - "only 75 and older" →
+      subset_column="AGE", subset_codes=[3]
+  - "only females" → first confirm SEX codes via run_categorical_analysis, then e.g.
+      subset_column="SEX", subset_codes=[2]
+  - Multiple conditions are not yet supported in one call — apply the most important filter
+    and note the limitation to the user.
+
+Always show the filter and resulting row count (returned in the tool output) in your response.
 
 Return results with decoded column labels and value mappings, not raw codes.
 """.strip()
