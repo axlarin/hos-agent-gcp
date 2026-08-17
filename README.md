@@ -10,7 +10,8 @@ The system answers natural-language questions about HOS Public Use Files (PUFs) 
 
 - **Definitions and methodology** — looks up what variables mean, their coded value labels, and survey design from the HOS PDF data dictionaries (RAG over ChromaDB)
 - **Dataset and schema queries** — lists available datasets, columns, and schema entries
-- **Statistical analysis** — Pearson correlation, Random Forest feature importance, logistic regression, chi-square/cross-tabulation, Mann-Whitney U / Kruskal-Wallis group comparisons
+- **Statistical analysis** — Pearson correlation, Random Forest feature importance (with CMS-style dummy encoding for Likert/multi-level responses), logistic regression, chi-square/cross-tabulation, Mann-Whitney U / Kruskal-Wallis group comparisons
+- **Subpopulation filtering** — all analysis tools accept `subset_column` + `subset_codes` to restrict analysis to a subpopulation (e.g. members aged 65+) before running any statistical test
 - **Multi-step analytical reports** — comprehensive health profile reports chaining all relevant analyses for a target variable, with per-step validation gates
 
 ---
@@ -46,6 +47,10 @@ User / API client
 - Multi-part analysis requests → `analysis_agent` using `generate_health_report`
 
 **Column name resolution** (`_find_column`): three-tier fallback — exact match → description substring → embedding cosine similarity (threshold 0.35) — so the agent can pass plain-English phrasing like `"general health status"` and the tool resolves it to the actual column code (`B25VRGENHTH`).
+
+**Subpopulation planner** (`_resolve_subset`): instead of asking Gemini to generate raw pandas query strings (which are error-prone — wrong column names, Unicode operators), all analysis tools accept `subset_column` (natural-language column name, resolved by `_find_column`) and `subset_codes` (list of integer codes from the column's `value_labels`). The planner builds the filter with `.isin()` deterministically — no string parsing or operator generation by the LLM.
+
+**CMS-style dummy encoding** (`_dummy_encode_multilevel`): columns with 3+ `value_labels` (Likert scales, multi-category items) are one-hot encoded before Random Forest fitting so the model learns independent weights per response level. Importances are then aggregated back to the original variable level (`total_importance`) and the strongest individual level is surfaced alongside it.
 
 ---
 
@@ -156,6 +161,8 @@ Directly executes a multi-step analytical workflow without an LLM hop. Returns b
 }
 ```
 
+To restrict the report to a subpopulation, use the `subset_column` + `subset_codes` parameters in the ADK tool call (via `/query`). The `/report` endpoint does not currently expose these — use `/query` for filtered reports.
+
 Returns `WorkflowResult.to_dict()` — see [Analytical workflows](#analytical-workflows) below.
 
 ---
@@ -228,7 +235,7 @@ agents/
 tools/
   pdf_tools.py           — search_pdf_guidance (ChromaDB), get_column_info, acronym expansion
   csv_tools.py           — list_datasets, get_dataset, column info delegation
-  analysis_tools.py      — 5 statistical tools + 3-tier _find_column resolver
+  analysis_tools.py      — 5 statistical tools + _find_column (3-tier) + _resolve_subset (planner) + _dummy_encode_multilevel (CMS encoding)
   report_tools.py        — workflow engine: GateConfig, WORKFLOWS, _run_workflow, generate_health_report
 
 rag/
