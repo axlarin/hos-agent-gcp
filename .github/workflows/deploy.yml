@@ -82,7 +82,7 @@ jobs:
             --set-env-vars SPECIALIST_MODEL=gemini-2.5-flash \
             --set-env-vars EVALUATOR_MODEL=gemini-2.5-flash \
             --allow-unauthenticated \
-            --startup-cpu-boost \
+            --cpu-boost \
             --async \
             --quiet
 
