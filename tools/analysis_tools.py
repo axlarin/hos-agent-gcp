@@ -109,6 +109,67 @@ def run_correlation_analysis(
     return "\n".join(lines)
 
 
+def _detect_conditional_followups(
+    df: pd.DataFrame,
+    target_col: str,
+    feature_cols: list[str],
+    miss_diff_threshold: float = 0.5,
+    corr_threshold: float = 0.6,
+) -> tuple[list[str], list[str]]:
+    """Identify feature columns that are conditional follow-up questions to target_col.
+
+    Two detection strategies, applied in order:
+
+    1. NaN-missingness asymmetry: feature's missing rate differs by more than
+       miss_diff_threshold between target groups. Catches follow-ups stored as NaN
+       for members who were not asked the question.
+
+    2. High Pearson correlation: |r| > corr_threshold between feature and target.
+       Catches follow-ups encoded as a numeric "not applicable" code (0, 8, 9, etc.)
+       rather than NaN — the numeric code makes the column appear non-missing while
+       still being perfectly aligned with the target. Legitimate predictors (SEX, AGE,
+       education, clinical items) rarely exceed r≈0.4 with a binary HOS outcome.
+
+    Returns (excluded_cols, remaining_cols).
+    """
+    target_groups = df[target_col].dropna().unique()
+    if len(target_groups) < 2:
+        return [], feature_cols
+
+    target_numeric = pd.to_numeric(df[target_col], errors="coerce")
+    excluded, remaining = [], []
+
+    for col in feature_cols:
+        flagged = False
+
+        # Check 1: NaN missingness asymmetry across target groups
+        miss_rates = [
+            df.loc[df[target_col] == g, col].isna().mean()
+            for g in target_groups
+        ]
+        if max(miss_rates) - min(miss_rates) > miss_diff_threshold:
+            flagged = True
+
+        # Check 2: very high Pearson correlation → likely a numeric-coded follow-up
+        if not flagged:
+            try:
+                col_numeric = pd.to_numeric(df[col], errors="coerce")
+                paired = pd.concat([target_numeric, col_numeric], axis=1).dropna()
+                if len(paired) > 30:
+                    r, _ = stats.pearsonr(paired.iloc[:, 0], paired.iloc[:, 1])
+                    if abs(r) > corr_threshold:
+                        flagged = True
+            except Exception:
+                pass
+
+        if flagged:
+            excluded.append(col)
+        else:
+            remaining.append(col)
+
+    return excluded, remaining
+
+
 def _dummy_encode_multilevel(
     df: pd.DataFrame, feature_cols: list[str], schema: dict
 ) -> tuple[pd.DataFrame, dict[str, str]]:
@@ -199,6 +260,20 @@ def run_feature_importance(
     target = _find_column(df, target_column)
     feature_cols = [c for c in df.select_dtypes(include="number").columns if c != target]
 
+    # Exclude conditional follow-up questions: survey items only answered by members
+    # who already reported the condition (e.g. "talked to doctor about urine leakage"
+    # is only asked if the member has urine leakage). Including them causes feature
+    # leakage — they dominate importance and suppress genuine predictors like SEX/AGE.
+    excluded_followups, feature_cols = _detect_conditional_followups(df, target, feature_cols)
+    if excluded_followups:
+        excluded_labels = [
+            schema.get(c.upper(), {}).get("description", c)[:50] for c in excluded_followups
+        ]
+        logger.info(
+            "Excluded %d conditional follow-up columns: %s",
+            len(excluded_followups), excluded_labels,
+        )
+
     sub = df[[target] + feature_cols].dropna()
     y = sub[target]
 
@@ -220,12 +295,17 @@ def run_feature_importance(
         import shap
         X_shap = X.sample(min(5000, len(X)), random_state=42)
         explainer = shap.TreeExplainer(clf)
-        shap_vals = explainer.shap_values(X_shap, check_additivity=False)
-        # Multi-class → list of per-class arrays; binary → single array
-        if isinstance(shap_vals, list):
-            mean_abs = np.mean([np.abs(sv).mean(axis=0) for sv in shap_vals], axis=0)
+        # Use the new callable API (SHAP 0.41+): returns an Explanation with a
+        # consistent .values array — avoids ambiguous list-vs-array output of shap_values().
+        shap_exp = explainer(X_shap)
+        arr = np.abs(shap_exp.values)
+        # arr shape:
+        #   binary classification → (n_samples, n_features)
+        #   multi-class           → (n_samples, n_features, n_classes)
+        if arr.ndim == 3:
+            mean_abs = arr.mean(axis=(0, 2))   # average over samples and classes → (n_features,)
         else:
-            mean_abs = np.abs(shap_vals).mean(axis=0)
+            mean_abs = arr.mean(axis=0)        # average over samples → (n_features,)
         dummy_importance = dict(zip(X.columns, mean_abs.tolist()))
         importance_method = "SHAP"
     except Exception as exc:
@@ -257,6 +337,12 @@ def run_feature_importance(
     if filter_desc:
         header += f" {filter_desc}"
     lines = [header + ":\n"]
+    if excluded_followups:
+        excl_descs = [schema.get(c.upper(), {}).get("description", c)[:60] for c in excluded_followups]
+        lines.append(
+            f"  [Note: {len(excluded_followups)} conditional follow-up column(s) auto-excluded to prevent "
+            f"feature leakage: {'; '.join(excl_descs)}]\n"
+        )
 
     for rank_i, (col, total_imp) in enumerate(ranked_vars[:top_n], 1):
         entry = schema.get(col.upper(), {})
