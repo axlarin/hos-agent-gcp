@@ -82,7 +82,32 @@ jobs:
             --set-env-vars SPECIALIST_MODEL=gemini-2.5-flash \
             --set-env-vars EVALUATOR_MODEL=gemini-2.5-flash \
             --allow-unauthenticated \
+            --startup-cpu-boost \
+            --async \
             --quiet
+
+      - name: Wait for revision to become ready
+        run: |
+          echo "Waiting for Cloud Run revision to become ready (max 15 min)..."
+          STATUS="Unknown"
+          for i in $(seq 1 30); do
+            CREATED=$(gcloud run services describe ${{ env.SERVICE }} \
+              --region ${{ env.REGION }} \
+              --format "value(status.latestCreatedRevisionName)" 2>/dev/null || echo "")
+            READY=$(gcloud run services describe ${{ env.SERVICE }} \
+              --region ${{ env.REGION }} \
+              --format "value(status.latestReadyRevisionName)" 2>/dev/null || echo "")
+            echo "Attempt $i/30 — created=$CREATED  ready=$READY"
+            if [ -n "$CREATED" ] && [ "$READY" = "$CREATED" ]; then
+              STATUS="True"
+              break
+            fi
+            sleep 30
+          done
+          if [ "$STATUS" != "True" ]; then
+            echo "ERROR: Service did not become ready within 15 minutes."
+            exit 1
+          fi
 
       - name: Show service URL
         run: |

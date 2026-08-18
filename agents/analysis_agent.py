@@ -4,6 +4,7 @@ from config.settings import settings
 from tools.analysis_tools import (
     run_correlation_analysis,
     run_feature_importance,
+    run_member_explanation,
     run_logistic_regression,
     run_categorical_analysis,
     run_group_comparison,
@@ -48,6 +49,14 @@ Tool selection:
                                  so the model learns independent weights per response level —
                                  this matches CMS methodology. Output reports total_importance
                                  per variable (sum across its levels) plus the strongest level.
+                                 Direction labels: "↑ risk factor" = pushes toward condition,
+                                 "↓ protective" = pushes away from condition.
+- run_member_explanation      — "explain this member / why does member X have condition Y?"
+                                 Requires the member's CASE_ID (an integer from the dataset).
+                                 Returns per-feature SHAP contributions with direction labels:
+                                 "↑ toward outcome" = pushes toward predicted class,
+                                 "↓ away from outcome" = pushes away. Use when the user asks
+                                 about a specific member, patient, or case ID.
 - run_logistic_regression     — regression on binary / recoded outcome; ask for recoding if outcome
                                  has more than 2 values
 - run_categorical_analysis    — frequency table (1 column) or crosstab + chi-square + Cramér's V
@@ -122,6 +131,7 @@ analysis_agent = Agent(
         generate_health_report,
         run_correlation_analysis,
         run_feature_importance,
+        run_member_explanation,
         run_logistic_regression,
         run_categorical_analysis,
         run_group_comparison,

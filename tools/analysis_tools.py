@@ -298,35 +298,50 @@ def run_feature_importance(
         # Use the new callable API (SHAP 0.41+): returns an Explanation with a
         # consistent .values array — avoids ambiguous list-vs-array output of shap_values().
         shap_exp = explainer(X_shap)
-        arr = np.abs(shap_exp.values)
-        # arr shape:
-        #   binary classification → (n_samples, n_features)
-        #   multi-class           → (n_samples, n_features, n_classes)
-        if arr.ndim == 3:
-            mean_abs = arr.mean(axis=(0, 2))   # average over samples and classes → (n_features,)
+        raw = shap_exp.values  # keep signed; abs taken separately for magnitude
+        # raw shape: (n_samples, n_features) or (n_samples, n_features, n_classes)
+        if raw.ndim == 3:
+            mean_abs = np.abs(raw).mean(axis=(0, 2))
+            # Direction: use class index 0 (lowest class = condition-present in HOS PUF 1/2 coding).
+            # Positive mean SHAP → this feature pushes toward having the condition (risk factor).
+            mean_signed = raw[:, :, 0].mean(axis=0)
         else:
-            mean_abs = arr.mean(axis=0)        # average over samples → (n_features,)
+            mean_abs = np.abs(raw).mean(axis=0)
+            mean_signed = raw.mean(axis=0)
         dummy_importance = dict(zip(X.columns, mean_abs.tolist()))
+        dummy_direction = dict(zip(X.columns, mean_signed.tolist()))
         importance_method = "SHAP"
     except Exception as exc:
         logger.warning("SHAP failed, falling back to RF Gini importance: %s", exc)
         dummy_importance = dict(zip(X.columns, clf.feature_importances_))
+        dummy_direction = {}
         importance_method = "RF Gini"
 
     if encode_multilevel:
         # Aggregate dummy importances back to original variable level
         var_importance: dict[str, float] = {}
+        var_dir_sum: dict[str, float] = {}  # importance-weighted signed direction accumulator
         var_top_level: dict[str, tuple[str, float]] = {}  # col -> (level_label, imp)
         for dummy_col, imp in dummy_importance.items():
             # Recover original column name: everything before the last underscore+digits
             orig = dummy_col.rsplit("_", 1)[0] if dummy_col in label_map else dummy_col
             var_importance[orig] = var_importance.get(orig, 0.0) + imp
+            if dummy_direction:
+                signed = dummy_direction.get(dummy_col, 0.0)
+                var_dir_sum[orig] = var_dir_sum.get(orig, 0.0) + signed * imp
             if dummy_col in label_map:
                 current = var_top_level.get(orig, ("", 0.0))
                 if imp > current[1]:
                     var_top_level[orig] = (label_map[dummy_col], imp)
+        # Normalize accumulated direction by total importance per variable
+        var_direction: dict[str, float] = {
+            col: ds / var_importance[col]
+            for col, ds in var_dir_sum.items()
+            if var_importance.get(col, 0) > 0
+        }
     else:
         var_importance = dummy_importance
+        var_direction = dict(dummy_direction)
         var_top_level = {}
 
     ranked_vars = sorted(var_importance.items(), key=lambda x: x[1], reverse=True)
@@ -348,6 +363,9 @@ def run_feature_importance(
         entry = schema.get(col.upper(), {})
         label = entry.get("description", col)
         line = f"  #{rank_i} {col} ({label}): total_importance={round(total_imp, 4)}"
+        if col in var_direction:
+            dir_label = "↑ risk factor" if var_direction[col] > 0 else "↓ protective"
+            line += f"  [{dir_label}]"
         if col in var_top_level:
             top_label, top_imp = var_top_level[col]
             # strip "col: " prefix already in label_map value
@@ -368,11 +386,156 @@ def run_feature_importance(
             rank = all_ranked.index(col) + 1
             line = (f"  {col} ({label}): total_importance={round(var_importance[col], 4)}"
                     f", rank #{rank} of {total_vars}")
+            if col in var_direction:
+                dir_label = "↑ risk factor" if var_direction[col] > 0 else "↓ protective"
+                line += f"  [{dir_label}]"
             if col in var_top_level:
                 top_label, top_imp = var_top_level[col]
                 level_only = top_label.split(": ", 1)[-1]
                 line += f"  [strongest level: '{level_only}' imp={round(top_imp, 4)}]"
             lines.append(line)
+
+    return "\n".join(lines)
+
+
+def run_member_explanation(
+    dataset: str,
+    target_column: str,
+    member_id: int,
+    top_n: int = 10,
+    subset_column: Optional[str] = None,
+    subset_codes: Optional[list] = None,
+) -> str:
+    """Explain a specific member's predicted outcome using SHAP values.
+
+    Fits the same Random Forest + SHAP pipeline as run_feature_importance, then
+    computes per-feature SHAP contributions for the member identified by CASE_ID.
+    Positive SHAP = pushes toward the predicted class; negative = pushes away.
+
+    Args:
+        dataset: Dataset name or partial name.
+        target_column: Outcome variable to predict (case-insensitive).
+        member_id: CASE_ID value identifying the member to explain.
+        top_n: Number of top contributing features to show (default 10).
+        subset_column: Optional column to filter on (e.g. "AGE").
+        subset_codes: Exact numeric codes to keep (e.g. [2, 3] for AGE 65+).
+
+    Returns:
+        Per-feature SHAP contributions for this member with direction labels,
+        plus the member's predicted probability and most influential feature values.
+    """
+    import shap
+
+    df = get_dataset(dataset)
+    df, filter_desc = _resolve_subset(df, subset_column, subset_codes)
+    schema = _load_schema()
+
+    # Locate member by CASE_ID; compare as strings for robustness (int vs float storage)
+    case_col = next((c for c in df.columns if c.upper() == "CASE_ID"), None)
+    if case_col is None:
+        raise KeyError("CASE_ID column not found in this dataset.")
+    member_mask = df[case_col].astype(str).str.strip() == str(member_id).strip()
+    member_row = df[member_mask]
+    if member_row.empty:
+        raise ValueError(
+            f"No member found with CASE_ID={member_id} in {dataset}. "
+            "Verify the CASE_ID value (try run_categorical_analysis on CASE_ID for valid samples)."
+        )
+
+    target = _find_column(df, target_column)
+    feature_cols = [
+        c for c in df.select_dtypes(include="number").columns
+        if c != target and c.upper() != "CASE_ID"
+    ]
+
+    excluded_followups, feature_cols = _detect_conditional_followups(df, target, feature_cols)
+
+    # Fit model on full population (same as run_feature_importance)
+    sub = df[[target] + feature_cols].dropna()
+    y = sub[target]
+    X_expanded, label_map = _dummy_encode_multilevel(sub, feature_cols, schema)
+    X_train = X_expanded.fillna(0)
+
+    clf = RandomForestClassifier(n_estimators=50, max_samples=0.3, random_state=42, n_jobs=-1)
+    clf.fit(X_train, y)
+
+    # Encode the member's features with the same schema; reindex to match training columns
+    member_sub = member_row[feature_cols].copy()
+    member_enc, _ = _dummy_encode_multilevel(member_sub, feature_cols, schema)
+    member_X = member_enc.fillna(0).reindex(columns=X_train.columns, fill_value=0)
+
+    # Predicted probability for this member
+    prob_arr = clf.predict_proba(member_X)[0]
+    classes = clf.classes_
+    pred_class_idx = int(np.argmax(prob_arr))
+    pred_class = classes[pred_class_idx]
+    pred_prob = round(float(np.max(prob_arr)), 3)
+
+    # SHAP explanation for this member
+    explainer = shap.TreeExplainer(clf)
+    member_exp = explainer(member_X)
+    arr = member_exp.values  # (1, n_features) or (1, n_features, n_classes)
+
+    if arr.ndim == 3:
+        # Use predicted class SHAP: positive = pushes toward predicted outcome
+        signed_shap = arr[0, :, pred_class_idx]
+    else:
+        signed_shap = arr[0]
+
+    # Aggregate dummy columns back to original variables; collect member's value labels
+    var_shap: dict[str, float] = {}
+    var_val: dict[str, str] = {}
+
+    for i, dummy_col in enumerate(X_train.columns):
+        orig = dummy_col.rsplit("_", 1)[0] if dummy_col in label_map else dummy_col
+        var_shap[orig] = var_shap.get(orig, 0.0) + float(signed_shap[i])
+
+        if orig not in var_val and orig in feature_cols:
+            raw = member_row[orig].values[0]
+            if pd.notna(raw):
+                vl = schema.get(orig.upper(), {}).get("value_labels", {})
+                try:
+                    val_label = vl.get(str(int(raw)), str(raw)) if vl else str(round(float(raw), 2))
+                except Exception:
+                    val_label = str(raw)
+            else:
+                val_label = "missing"
+            var_val[orig] = val_label
+
+    ranked = sorted(var_shap.items(), key=lambda x: abs(x[1]), reverse=True)
+
+    # Build output
+    target_entry = schema.get(target.upper(), {})
+    target_label = target_entry.get("description", target)
+    pred_class_label = target_entry.get("value_labels", {}).get(
+        str(int(pred_class)), str(pred_class)
+    )
+    dataset_label = f"{dataset}{' ' + filter_desc if filter_desc else ''}"
+    excl_note = (
+        f"\n  [Note: {len(excluded_followups)} conditional follow-up column(s) excluded]"
+        if excluded_followups else ""
+    )
+
+    lines = [
+        f"Member explanation — CASE_ID={member_id} | {dataset_label}",
+        f"Outcome: {target_label}",
+        f"Predicted: {pred_class_label} (code={pred_class}) — probability {pred_prob}{excl_note}",
+        "",
+        f"Top {min(top_n, len(ranked))} feature contributions",
+        "  (+ = pushes toward predicted outcome, - = pushes away from it):",
+        "",
+    ]
+
+    for col, shap_val in ranked[:top_n]:
+        entry = schema.get(col.upper(), {})
+        col_label = entry.get("description", col)[:55]
+        member_val = var_val.get(col, "?")
+        dir_str = "↑ toward outcome" if shap_val > 0 else "↓ away from outcome"
+        lines.append(
+            f"  {col} ({col_label})"
+            f"\n    member value : {member_val}"
+            f"\n    SHAP         : {round(shap_val, 4):+.4f}  [{dir_str}]"
+        )
 
     return "\n".join(lines)
 

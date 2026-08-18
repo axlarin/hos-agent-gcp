@@ -34,6 +34,7 @@ User / API client
    │      ├─ generate_health_report     │  ←── workflow engine (report_tools.py)
    │      ├─ run_correlation_analysis   │
    │      ├─ run_feature_importance     │
+   │      ├─ run_member_explanation     │
    │      ├─ run_logistic_regression    │  ←── HOS PUF CSVs (pandas + scipy/sklearn)
    │      ├─ run_categorical_analysis   │
    │      └─ run_group_comparison       │
@@ -52,9 +53,11 @@ User / API client
 
 **CMS-style dummy encoding** (`_dummy_encode_multilevel`): columns with 3+ `value_labels` (Likert scales, multi-category items) are one-hot encoded before Random Forest fitting. Fallback: if the schema has no `value_labels` for a column (PDF parser miss) but the column has 3–15 unique integer values, it is still encoded. Importances are aggregated back to the original variable level (`total_importance`) and the strongest response level is surfaced alongside it.
 
-**SHAP variable importance**: `run_feature_importance` uses SHAP `TreeExplainer` (mean absolute SHAP values) instead of raw RF Gini importance. SHAP correctly handles correlated features and dummy-encoded groups — each dummy column gets an independent SHAP score that aggregates cleanly to the original variable. A sample of 5,000 rows is used for speed; falls back to RF Gini if SHAP is unavailable. Uses the new callable API (`explainer(X).values`) to handle SHAP 0.41+ output shapes consistently: binary classification returns `(n_samples, n_features, n_classes=2)` which is reduced via `mean(axis=(0,2))` to `(n_features,)`.
+**SHAP variable importance + direction**: `run_feature_importance` uses SHAP `TreeExplainer` instead of raw RF Gini importance. SHAP correctly handles correlated features and dummy-encoded groups. A sample of 5,000 rows is used for speed; falls back to RF Gini if SHAP is unavailable. Output includes both magnitude (mean |SHAP| across dummy levels) and direction: `↑ risk factor` = this variable pushes toward having the condition; `↓ protective` = pushes away. Direction is computed as importance-weighted mean signed SHAP toward the condition-present class (lowest class code in HOS PUF 1/2 coding), aggregated across all dummy levels to the original variable.
 
-**Conditional follow-up exclusion** (`_detect_conditional_followups`): before fitting, `run_feature_importance` automatically excludes survey items that are conditional follow-up questions to the target variable. These items (e.g. "Did you talk to a doctor about urine leakage?" only asked to members who reported urine leakage) would otherwise dominate importance scores and suppress genuine predictors like SEX and AGE. Two detection strategies: (1) NaN-missingness asymmetry across target groups (catches NaN-encoded skips); (2) high Pearson correlation `|r| > 0.6` with the target (catches numeric-code-encoded skips such as 0 or 9). Excluded columns are reported in the tool output for transparency. Works generically for any HOS outcome — falls, physical activity, urine leakage, etc.
+**Member-level explanations** (`run_member_explanation`): new tool that explains a specific member's predicted outcome using SHAP. Given a `CASE_ID`, fits the same RF model on the full population, then computes per-feature SHAP contributions for that one member. Output shows each feature's value for this member, its signed SHAP contribution (`+` = pushes toward predicted outcome, `-` = pushes away), and its predicted class with probability. Useful for answering "why was member X predicted to have Y?"
+
+**Conditional follow-up exclusion** (`_detect_conditional_followups`): before fitting, both `run_feature_importance` and `run_member_explanation` automatically exclude survey items that are conditional follow-up questions to the target variable. These items (e.g. "Did you talk to a doctor about urine leakage?" only asked to members who reported urine leakage) would otherwise dominate importance scores and suppress genuine predictors like SEX and AGE. Two detection strategies: (1) NaN-missingness asymmetry across target groups (catches NaN-encoded skips); (2) high Pearson correlation `|r| > 0.6` with the target (catches numeric-code-encoded skips such as 0 or 9). Excluded columns are reported in the tool output for transparency. Works generically for any HOS outcome — falls, physical activity, urine leakage, etc.
 
 ---
 
@@ -70,8 +73,8 @@ User / API client
 | Embeddings | `all-MiniLM-L6-v2` (sentence-transformers) |
 | Analysis | pandas, scipy, scikit-learn, shap |
 | Schema cache | `schema_memory.json` (PDF-parsed + Gemini fallback) |
-| Runtime | GCP Cloud Run (2 vCPU, 2 GiB, min-instances 0) |
-| CI/CD | GitHub Actions → Artifact Registry → Cloud Run |
+| Runtime | GCP Cloud Run (4 vCPU, 8 GiB, min-instances 0, startup-cpu-boost) |
+| CI/CD | GitHub Actions → Artifact Registry → Cloud Run (async deploy + polling) |
 
 ---
 
@@ -239,7 +242,7 @@ agents/
 tools/
   pdf_tools.py           — search_pdf_guidance (ChromaDB), get_column_info, acronym expansion
   csv_tools.py           — list_datasets, get_dataset, column info delegation
-  analysis_tools.py      — 5 statistical tools + _find_column (3-tier) + _resolve_subset (planner) + _dummy_encode_multilevel (CMS encoding + data-driven fallback) + _detect_conditional_followups + SHAP importance
+  analysis_tools.py      — 6 statistical tools + _find_column (3-tier) + _resolve_subset (planner) + _dummy_encode_multilevel (CMS encoding + data-driven fallback) + _detect_conditional_followups + SHAP importance + direction + member-level explanation
   report_tools.py        — workflow engine: GateConfig, WORKFLOWS, _run_workflow, generate_health_report
 
 rag/
